@@ -150,7 +150,7 @@ test("OVATION parses into bounded southern cells", () => {
   assert.strictEqual(Overlay.parseOvation("", 100), null)
 })
 
-test("Kp parsing takes the latest observed and the forecast peak", () => {
+test("Kp parsing takes the latest observed, the forecast peak, and the rows", () => {
   const raw = JSON.stringify([
     { time_tag: "2026-09-20T03:00:00", kp: 2, observed: "observed" },
     { time_tag: "2026-09-20T06:00:00", kp: 3, observed: "observed" },
@@ -160,7 +160,21 @@ test("Kp parsing takes the latest observed and the forecast peak", () => {
   const data = Overlay.parseKp(raw)
   assert.strictEqual(data.nowKp, 2)
   assert.strictEqual(data.peakForecast, 5)
+  assert.strictEqual(data.rows.length, 4)
+  assert.strictEqual(data.rows[0].kind, "observed")
+  assert.strictEqual(data.rows[3].kind, "predicted")
+  assert.ok(data.rows[0].t instanceof Date)
   assert.strictEqual(Overlay.parseKp("[]"), null)
+})
+
+test("solar readings parse from the summary feeds", () => {
+  assert.strictEqual(Overlay.parseSolarWind('[{"proton_speed": 403}]'), 403)
+  assert.deepStrictEqual(Overlay.parseMagField('[{"bt": 5, "bz_gsm": -3}]'), { bt: 5, bz: -3 })
+  assert.strictEqual(Overlay.parseSolarFlux('[{"flux": 97}]'), 97)
+  assert.deepStrictEqual(Overlay.parseLatestFlare('[{"current_class": "B4.0"}]'), { flareClass: "B4.0" })
+  assert.strictEqual(Overlay.parseSolarWind(""), null)
+  assert.strictEqual(Overlay.parseSolarWind("[]"), null)
+  assert.strictEqual(Overlay.parseLatestFlare("not json"), null)
 })
 
 test("geomagnetic latitude measures from the dipole reference pole", () => {

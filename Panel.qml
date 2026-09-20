@@ -746,6 +746,12 @@ Panel {
   property string auroraTime: ""
   property real kpNow: NaN
   property real kpPeak: NaN
+  property var kpRows: []
+  property real solarWind: NaN
+  property real magBt: NaN
+  property real magBz: NaN
+  property real solarFlux: NaN
+  property string flareClass: ""
   property real auroraAtMs: 0
 
   readonly property bool auroraTab: root.view === "aurora"
@@ -761,6 +767,26 @@ Panel {
       kpProc.answered = false
       kpProc.command = Overlay.kpCommand()
       kpProc.running = true
+    }
+    if (!solarProc.running) {
+      solarProc.answered = false
+      solarProc.command = Overlay.solarCommand()
+      solarProc.running = true
+    }
+    if (!magProc.running) {
+      magProc.answered = false
+      magProc.command = Overlay.magCommand()
+      magProc.running = true
+    }
+    if (!fluxProc.running) {
+      fluxProc.answered = false
+      fluxProc.command = Overlay.fluxCommand()
+      fluxProc.running = true
+    }
+    if (!flareProc.running) {
+      flareProc.answered = false
+      flareProc.command = Overlay.flareCommand()
+      flareProc.running = true
     }
   }
 
@@ -798,6 +824,62 @@ Panel {
     stdout: StdioCollector { id: kpOut; waitForEnd: true }
   }
 
+  Process {
+    id: solarProc
+    property bool answered: false
+    onExited: function(exitCode) {
+      answered = true
+      if (exitCode === 0) {
+        var v = Overlay.parseSolarWind(solarOut.text)
+        if (v !== null) root.solarWind = v
+      }
+    }
+    onRunningChanged: if (!running && !answered) answered = true
+    stdout: StdioCollector { id: solarOut; waitForEnd: true }
+  }
+
+  Process {
+    id: magProc
+    property bool answered: false
+    onExited: function(exitCode) {
+      answered = true
+      if (exitCode === 0) {
+        var m = Overlay.parseMagField(magOut.text)
+        if (m) { root.magBt = m.bt; root.magBz = m.bz }
+      }
+    }
+    onRunningChanged: if (!running && !answered) answered = true
+    stdout: StdioCollector { id: magOut; waitForEnd: true }
+  }
+
+  Process {
+    id: fluxProc
+    property bool answered: false
+    onExited: function(exitCode) {
+      answered = true
+      if (exitCode === 0) {
+        var f = Overlay.parseSolarFlux(fluxOut.text)
+        if (f !== null) root.solarFlux = f
+      }
+    }
+    onRunningChanged: if (!running && !answered) answered = true
+    stdout: StdioCollector { id: fluxOut; waitForEnd: true }
+  }
+
+  Process {
+    id: flareProc
+    property bool answered: false
+    onExited: function(exitCode) {
+      answered = true
+      if (exitCode === 0) {
+        var fl = Overlay.parseLatestFlare(flareOut.text)
+        if (fl) root.flareClass = fl.flareClass
+      }
+    }
+    onRunningChanged: if (!running && !answered) answered = true
+    stdout: StdioCollector { id: flareOut; waitForEnd: true }
+  }
+
   function applyAurora(exitCode, text) {
     if (exitCode !== 0) return
     var data = Overlay.parseOvation(text, 3000)
@@ -811,6 +893,7 @@ Panel {
     if (exitCode !== 0) return
     var data = Overlay.parseKp(text)
     if (!data) return
+    root.kpRows = data.rows
     root.kpNow = data.nowKp
     root.kpPeak = data.peakForecast
   }
@@ -1254,6 +1337,12 @@ Panel {
           observedTime: root.auroraTime
           kpNow: root.kpNow
           kpPeak: root.kpPeak
+          kpRows: root.kpRows
+          solarWind: root.solarWind
+          magBt: root.magBt
+          magBz: root.magBz
+          solarFlux: root.solarFlux
+          flareClass: root.flareClass
           site: root.hasLocation
             ? ({ latitude: root.homeLatitude, longitude: root.homeLongitude })
             : null

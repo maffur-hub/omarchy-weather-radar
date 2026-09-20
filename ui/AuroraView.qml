@@ -6,8 +6,9 @@ import "../lib/coast.js" as Coast
 
 // The Aurora Australis tab: a polar view of the southern hemisphere with the
 // NOAA OVATION aurora probability grid under the coastlines, a marker for the
-// viewer's location, and a header saying what the Kp index is doing now and
-// in the forecast.
+// viewer's location, a Kp chart of the observed history and forecast, and a
+// line of solar readings. Together these are the aurora's two questions —
+// where the oval is, and what is driving it — answered by NOAA SWPC.
 //
 // The projection is azimuthal equidistant about the south pole, exactly the
 // one the aurora is read on: radius is linear in colatitude, the 0 meridian
@@ -21,6 +22,12 @@ Column {
   property string observedTime: ""
   property real kpNow: NaN
   property real kpPeak: NaN
+  property var kpRows: []          // [{ t, kp, kind }] for the chart
+  property real solarWind: NaN     // km/s
+  property real magBt: NaN         // nT
+  property real magBz: NaN         // nT
+  property real solarFlux: NaN     // s.f.u.
+  property string flareClass: ""   // e.g. "C1.2"
 
   // The viewer, as { latitude, longitude }, or null to omit the marker.
   property var site: null
@@ -30,6 +37,15 @@ Column {
 
   readonly property real minLat: -25
   readonly property bool hasKp: isFinite(kpNow) || isFinite(kpPeak)
+
+  // Kp at which the aurora reaches this location on the horizon, for the
+  // chart's reference line, or 0 to omit it (never within the forecast range).
+  readonly property real visibleAtKp: {
+    if (!site) return 0
+    var absMlat = Math.abs(Overlay.geomagLat(site.latitude, site.longitude))
+    var kp = (63.5 - absMlat) / 2.06
+    return kp > 0 && kp <= 9 ? kp : 0
+  }
 
   // A short line about what the sky is doing: the current Kp, whether the
   // oval reaches this location, and the forecast peak.
@@ -51,6 +67,20 @@ Column {
 
   onCellsChanged: map.requestPaint()
   onSiteChanged: map.requestPaint()
+
+  // One line of what is actually driving the oval right now, or a placeholder
+  // while the first readings are on their way.
+  readonly property string solarLine: {
+    var bits = []
+    if (isFinite(solarWind)) bits.push("solar wind " + Math.round(solarWind) + " km/s")
+    if (isFinite(magBt) || isFinite(magBz)) {
+      if (isFinite(magBz)) bits.push("Bz " + magBz.toFixed(1) + " nT")
+      else bits.push("Bt " + magBt.toFixed(1) + " nT")
+    }
+    if (isFinite(solarFlux)) bits.push("F10.7 " + Math.round(solarFlux))
+    if (flareClass !== "") bits.push("flare " + flareClass)
+    return bits.length > 0 ? bits.join(" · ") : "Loading solar activity…"
+  }
 
   spacing: Style.space(8)
 
@@ -172,6 +202,36 @@ Column {
         ctx.fill()
       }
     }
+  }
+
+  // The Kp chart: observed history running into NOAA's three-day forecast,
+  // with the storm threshold and the Kp this location needs before there is
+  // anything to look for. The same shape the space weather plugin drew.
+  KpChart {
+    id: kpChart
+    width: parent.width
+    height: Style.space(110)
+    rows: root.kpRows
+    visibleAtKp: root.visibleAtKp
+    barColor: root.foreground
+    forecastColor: Qt.darker(root.foreground, 1.6)
+    gridColor: Qt.darker(root.foreground, 1.6)
+    labelColor: Qt.darker(root.foreground, 1.6)
+    fontFamily: Style.font.family
+    timePattern: "HH:mm"
+  }
+
+  // The solar readings that drive the oval: wind speed, the magnetic field
+  // (Bz negative opens the door), the 10.7 cm flux, and the latest flare.
+  Text {
+    textFormat: Text.PlainText
+    width: parent.width
+    text: root.solarLine
+    color: root.foreground
+    font.family: Style.font.family
+    font.pixelSize: Style.font.caption
+    elide: Text.ElideRight
+    opacity: 0.85
   }
 
   Text {

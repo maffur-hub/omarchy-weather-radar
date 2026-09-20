@@ -39,6 +39,10 @@ const PROCESSES = [
   { id: "gridProc", file: "Panel.qml", collects: true, builder: "gridCommand" },
   { id: "auroraProc", file: "Panel.qml", collects: true, builder: "ovationCommand" },
   { id: "kpProc", file: "Panel.qml", collects: true, builder: "kpCommand" },
+  { id: "solarProc", file: "Panel.qml", collects: true, builder: "solarCommand" },
+  { id: "magProc", file: "Panel.qml", collects: true, builder: "magCommand" },
+  { id: "fluxProc", file: "Panel.qml", collects: true, builder: "fluxCommand" },
+  { id: "flareProc", file: "Panel.qml", collects: true, builder: "flareCommand" },
 ]
 
 // Files read straight into the process, and why each one carries no ceiling of
