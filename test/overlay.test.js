@@ -124,6 +124,45 @@ test("the adaptive synoptic step draws on a calm day", () => {
   assert.ok(bars.length <= 12, "adaptive step should not over-populate")
 })
 
+test("pressure extrema label the high and low centres", () => {
+  const pts = []
+  for (let r = 0; r < 6; r++) {
+    for (let c = 0; c < 6; c++) {
+      let v = 1010
+      if (r === 2 && c === 2) v += 5   // high
+      if (r === 4 && c === 4) v -= 5   // low
+      pts.push({ latitude: 50 - r, longitude: -50 + c, pressure: v })
+    }
+  }
+  const ex = Overlay.pressureExtrema(pts, 6, 6)
+  const highs = ex.filter(e => e.kind === "H")
+  const lows = ex.filter(e => e.kind === "L")
+  assert.strictEqual(highs.length, 1, JSON.stringify(ex))
+  assert.strictEqual(lows.length, 1, JSON.stringify(ex))
+  assert.strictEqual(highs[0].lat, 48)   // row 2
+  assert.strictEqual(highs[0].lon, -48)  // col 2
+  assert.strictEqual(lows[0].lat, 46)    // row 4
+})
+
+test("a monotonic field has no pressure centres to label", () => {
+  const pts = risingGrid(6, 6, 1000, 1020)
+  assert.deepStrictEqual(Overlay.pressureExtrema(pts, 6, 6), [])
+})
+
+test("an adjacent unequal pair of highs labels only the higher one", () => {
+  const pts = []
+  for (let r = 0; r < 6; r++) {
+    for (let c = 0; c < 6; c++) {
+      let v = 1010
+      if (r === 2 && c === 2) v += 5   // the true high
+      if (r === 2 && c === 3) v += 4   // a shoulder, not a centre
+      pts.push({ latitude: 50 - r, longitude: -50 + c, pressure: v })
+    }
+  }
+  const ex = Overlay.pressureExtrema(pts, 6, 6)
+  assert.strictEqual(ex.filter(e => e.kind === "H").length, 1, JSON.stringify(ex))
+})
+
 test("a missing reading keeps contours out of its cell", () => {
   const pts = risingGrid(6, 6, 1000, 1020)
   pts[3 * 6 + 3].pressure = null   // one hole in the middle

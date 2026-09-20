@@ -57,6 +57,7 @@ Item {
   property bool synopticEnabled: false
   property var overlayPoints: []
   property var overlayIsobars: []
+  property var overlayExtrema: []
   property var overlayRevision: 0
 
   // Which of the two radar layers holds which frame, by the frame's moment, and
@@ -267,6 +268,7 @@ Item {
       anchors.fill: parent
       points: root.overlayPoints
       isobars: root.overlayIsobars
+      extrema: root.overlayExtrema
       showWind: root.windEnabled
       showSynoptic: root.synopticEnabled
       centerLatitude: root.centerLatitude

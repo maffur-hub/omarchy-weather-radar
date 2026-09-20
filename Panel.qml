@@ -697,6 +697,7 @@ Panel {
 
   property var overlayPoints: []
   property var overlayIsobars: []
+  property var overlayExtrema: []
   property int overlayRevision: 0
 
   function requestGrid() {
@@ -735,6 +736,7 @@ Panel {
     if (!pts || !shape) return
     root.overlayPoints = pts
     root.overlayIsobars = root.showSynoptic ? Overlay.synopticIsobars(pts, shape.cols, shape.rows) : []
+    root.overlayExtrema = root.showSynoptic ? Overlay.pressureExtrema(pts, shape.cols, shape.rows) : []
     root.overlayRevision++
   }
 
@@ -1141,6 +1143,7 @@ Panel {
           synopticEnabled: root.showSynoptic
           overlayPoints: root.overlayPoints
           overlayIsobars: root.overlayIsobars
+          overlayExtrema: root.overlayExtrema
           overlayRevision: root.overlayRevision
 
           frameA: root.frameA

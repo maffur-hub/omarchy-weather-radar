@@ -14,6 +14,8 @@ Canvas {
   property var points: []
   // Isobars: [{ level, path: [[lat, lon], ...] }].
   property var isobars: []
+  // Pressure centres: [{ lat, lon, kind: "H" | "L" }].
+  property var extrema: []
   property bool showWind: false
   property bool showSynoptic: false
 
@@ -30,6 +32,7 @@ Canvas {
 
   onPointsChanged: requestPaint()
   onIsobarsChanged: requestPaint()
+  onExtremaChanged: requestPaint()
   onShowWindChanged: requestPaint()
   onShowSynopticChanged: requestPaint()
   onRevisionChanged: requestPaint()
@@ -45,6 +48,7 @@ Canvas {
     if (!showWind && !showSynoptic) return
 
     if (showSynoptic) drawIsobars(ctx)
+    if (showSynoptic) drawExtrema(ctx)
     if (showWind) drawWind(ctx)
   }
 
@@ -83,6 +87,25 @@ Canvas {
       ctx.globalAlpha = 0.5
     }
     ctx.globalAlpha = 1
+  }
+
+  function drawExtrema(ctx) {
+    // The pressure centres, as synoptic charts mark them: an H or an L with a
+    // dark disc behind it so the letter reads over the radar beneath.
+    ctx.textAlign = "center"
+    ctx.textBaseline = "middle"
+    ctx.font = "bold 15px sans-serif"
+    for (var i = 0; i < root.extrema.length; i++) {
+      var ex = root.extrema[i]
+      var p = project(ex.lat, ex.lon)
+      if (!isFinite(p.x) || !isFinite(p.y)) continue
+      ctx.fillStyle = "rgba(0,0,0,0.35)"
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, 11, 0, 2 * Math.PI)
+      ctx.fill()
+      ctx.fillStyle = root.foreground
+      ctx.fillText(ex.kind, p.x, p.y)
+    }
   }
 
   function drawWind(ctx) {
