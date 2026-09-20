@@ -63,17 +63,17 @@ Canvas {
       var path = bar.path
       if (!path || path.length < 2) continue
       ctx.beginPath()
-      var start = project(path[0][0], path[0][1])
+      var start = project(path[0].lat, path[0].lon)
       ctx.moveTo(start.x, start.y)
       for (var j = 1; j < path.length; j++) {
-        var p = project(path[j][0], path[j][1])
+        var p = project(path[j].lat, path[j].lon)
         ctx.lineTo(p.x, p.y)
       }
       ctx.stroke()
 
       // A small level label at the middle of the line, so the squiggles say
       // what pressure they are.
-      var mid = project(path[Math.floor(path.length / 2)][0], path[Math.floor(path.length / 2)][1])
+      var mid = project(path[Math.floor(path.length / 2)].lat, path[Math.floor(path.length / 2)].lon)
       ctx.font = "9px sans-serif"
       ctx.textAlign = "center"
       ctx.textBaseline = "middle"

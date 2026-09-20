@@ -734,7 +734,7 @@ Panel {
     var shape = root.gridShapePending
     if (!pts || !shape) return
     root.overlayPoints = pts
-    root.overlayIsobars = root.showSynoptic ? Overlay.isobars(pts, shape.cols, shape.rows, 4) : []
+    root.overlayIsobars = root.showSynoptic ? Overlay.synopticIsobars(pts, shape.cols, shape.rows) : []
     root.overlayRevision++
   }
 

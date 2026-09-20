@@ -104,6 +104,8 @@ test("isobars place a contour where the field crosses the level", () => {
   for (const bar of c12) {
     for (const p of bar.path) {
       assert.ok(p.lat > 40 && p.lat < 50, `lat ${p.lat} out of the crossed band`)
+      assert.ok(Number.isFinite(p.lon), `lon ${p.lon} not finite`)
+      assert.ok(p.lon > -51 && p.lon < -44, `lon ${p.lon} out of the grid`)
     }
   }
 })
@@ -111,6 +113,15 @@ test("isobars place a contour where the field crosses the level", () => {
 test("a flat field has no isobars", () => {
   const pts = risingGrid(6, 6, 1012, 1012)
   assert.deepStrictEqual(Overlay.isobars(pts, 6, 6, 4), [])
+})
+
+test("the adaptive synoptic step draws on a calm day", () => {
+  // Only 2 hPa across the whole grid: a fixed 4 hPa step would draw nothing.
+  const pts = risingGrid(6, 6, 1013, 1015)
+  assert.deepStrictEqual(Overlay.isobars(pts, 6, 6, 4), [])
+  const bars = Overlay.synopticIsobars(pts, 6, 6)
+  assert.ok(bars.length > 0, "adaptive step found no contours")
+  assert.ok(bars.length <= 12, "adaptive step should not over-populate")
 })
 
 test("a missing reading keeps contours out of its cell", () => {
