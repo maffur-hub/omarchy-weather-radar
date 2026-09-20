@@ -28,7 +28,8 @@
       "defaultZoom": 7,
       "smoothTiles": true,
       "showSnow": true,
-      "showLabel": false
+      "showLabel": false,
+      "showLightning": false
     },
     "schema": [
       {
@@ -108,6 +109,13 @@
         "label": "Show status text in bar",
         "defaultValue": false,
         "description": "Print the outlook next to the bar icon: what is approaching, and when. Requires storm alerts to be on, since what it prints is their forecast."
+      },
+      {
+        "key": "showLightning",
+        "type": "boolean",
+        "label": "Lightning overlay",
+        "defaultValue": false,
+        "description": "Draw live lightning strikes over the radar, from the community LightningMaps/Blitzortung detection network. Also toggleable from the panel."
       }
     ]
   }

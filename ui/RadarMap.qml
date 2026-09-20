@@ -36,6 +36,15 @@ Item {
   property var radarTileUrlA: null
   property var radarTileUrlB: null
 
+  // The lightning overlay. The same shape as the radar layers, but a separate
+  // raster source (the LightningMaps tile server) that refreshes in place
+  // rather than stepping frame to frame, so it is a single layer whose tiles
+  // are repointed as the bucket turns over. `lightningTileUrlFor` returning ""
+  // — when the overlay is off — draws nothing and fetches nothing.
+  property bool lightningEnabled: false
+  property var lightningTileUrlFor: null
+  property int lightningEpoch: 0
+
   // Which of the two radar layers holds which frame, by the frame's moment, and
   // which is in front. Bumping a layer's frame while it is behind, then
   // swapping, is what makes the loop dissolve instead of flicker.
@@ -182,6 +191,34 @@ Item {
       opacity: !root.showA ? 1 : 0
       onContentReadyChanged: root.applySwapWhenReady()
       onTileFailed: function(source) { root.tileFailed(source) }
+      Behavior on opacity {
+        NumberAnimation { duration: 380; easing.type: Easing.InOutQuad }
+      }
+    }
+
+    // ---- Lightning overlay ----------------------------------------------
+    // Live strokes over the radar, from the LightningMaps tile server. Requested
+    // at the map's own zoom — the source runs to z16, past where this map stops
+    // — and refreshed by the panel as the two-minute cache bucket turns over.
+    //
+    // These tiles load straight from the network rather than through the tile
+    // cache: they are small (a 256 px palette image, typically under a few
+    // kilobytes), drawn over a host fixed in the plugin, and stale within two
+    // minutes, so a disk cache would only ever hold a stale copy. The decode
+    // stays bounded by the layer's `sourceSize`, as every image here is. A tile
+    // that fails is left alone: it is not the radar, so it must not raise the
+    // map's radar notices.
+    TileLayer {
+      id: lightning
+      anchors.fill: parent
+      visible: root.lightningEnabled
+      centerLatitude: root.centerLatitude
+      centerLongitude: root.centerLongitude
+      zoom: root.zoom
+      tileUrlFor: root.lightningEnabled ? root.lightningTileUrlFor : null
+      revision: "lightning:" + root.lightningEpoch
+      smooth: true
+      opacity: 1
       Behavior on opacity {
         NumberAnimation { duration: 380; easing.type: Easing.InOutQuad }
       }

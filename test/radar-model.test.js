@@ -57,6 +57,27 @@ test("the coverage mask is requested from the host alone", () => {
   assert.strictEqual(RadarModel.coverageTileUrl("", 512, 7, 0, 0), "")
 })
 
+test("a lightning tile is a standard XYZ request to the fixed host", () => {
+  const url = RadarModel.lightningTileUrl(7, 117, 77, 14915680)
+  assert.strictEqual(url,
+    "https://tiles.lightningmaps.org/?x=117&y=77&z=7&s=256&t=2&T=14915680")
+  // The two-minute bucket is what keeps a refreshed tile from being answered
+  // from a cache; without one it still asks the same place, for that bucket 0.
+  assert.strictEqual(RadarModel.lightningTileUrl(7, 117, 77, 0),
+    "https://tiles.lightningmaps.org/?x=117&y=77&z=7&s=256&t=2&T=0")
+})
+
+test("a lightning tile outside the grid is not a request", () => {
+  assert.strictEqual(RadarModel.lightningTileUrl(-1, 0, 0, 1), "")
+  assert.strictEqual(RadarModel.lightningTileUrl(7, 128, 0, 1), "")
+  assert.strictEqual(RadarModel.lightningTileUrl(7, 0, 128, 1), "")
+  assert.strictEqual(RadarModel.lightningTileUrl(7, 1.5, 0, 1), "")
+  // An unparseable bucket is not a reason to refuse the tile — it asks for
+  // the current one, bucket 0.
+  assert.strictEqual(RadarModel.lightningTileUrl(7, 0, 0, "x"),
+    "https://tiles.lightningmaps.org/?x=0&y=0&z=7&s=256&t=2&T=0")
+})
+
 test("a geocoding query is escaped rather than pasted into the URL", () => {
   const url = RadarModel.geocodingUrl("São Paulo", 5)
   assert.ok(url.includes("name=S%C3%A3o%20Paulo"), url)

@@ -54,6 +54,7 @@ Panel {
   readonly property var thresholdOptions: Alerts.THRESHOLD_OPTIONS
   readonly property bool smoothTiles: Settings.smoothTiles(settings)
   readonly property bool showSnow: Settings.showSnow(settings)
+  readonly property bool showLightning: Settings.showLightning(settings)
   readonly property int colorSchemeId: Settings.colorSchemeId(settings)
 
   // The service is the authority on lead time whenever it is mounted; the
@@ -604,10 +605,30 @@ Panel {
 
   // Credit for everything drawn on the map, in one place so it cannot fall out
   // of step with where the data actually comes from.
-  readonly property string attribution: "RainViewer · Natural Earth"
+  readonly property string attribution: "RainViewer · LightningMaps · Natural Earth"
 
   function radarTileUrlA(z, x, y) { return root.radarTileUrlForTime(root.frameA, z, x, y) }
   function radarTileUrlB(z, x, y) { return root.radarTileUrlForTime(root.frameB, z, x, y) }
+
+  // One lightning tile, with the two-minute cache bucket in the URL so that
+  // asking again after the server regenerates is not answered from a cache.
+  function lightningTileUrlFor(z, x, y) {
+    var bucket = Math.floor(Date.now() / 1000 / RadarModel.LIGHTNING_TILE_BUCKET_SEC)
+    return RadarModel.lightningTileUrl(z, x, y, bucket)
+  }
+
+  // Bumped on a timer while the map is open with the overlay on, so the
+  // lightning layer asks again where its tiles are to be loaded from. The URL
+  // only changes when the two-minute bucket turns over, so an idle refresh
+  // costs nothing — Qt answers unchanged URLs from its own cache.
+  property int lightningEpoch: 0
+  Timer {
+    id: lightningRefresh
+    interval: 60000
+    repeat: true
+    running: root.opened && root.showLightning
+    onTriggered: root.lightningEpoch++
+  }
 
   // The radar tiles covering the view, at the zoom the radar is fetched at.
   readonly property var viewTiles: {
@@ -803,6 +824,10 @@ Panel {
           radarTileUrlA: root.radarTileUrlA
           radarTileUrlB: root.radarTileUrlB
 
+          lightningEnabled: root.showLightning
+          lightningTileUrlFor: root.lightningTileUrlFor
+          lightningEpoch: root.lightningEpoch
+
           frameA: root.frameA
           frameB: root.frameB
           frameEpoch: root.frameEpoch
@@ -874,6 +899,20 @@ Panel {
             root.playing = false
             root.frameIndex = index
           }
+        }
+
+        PanelSeparator { width: parent.width }
+
+        // One row, and a deliberate exception to the heading rule above: this
+        // is a single switch on the thing right above it, not a section of its
+        // own — the map is what it governs, so it sits against the map.
+        Toggle {
+          width: parent.width
+          label: "Lightning overlay"
+          description: "Live strikes, from the community LightningMaps/Blitzortung network"
+          checked: root.showLightning
+          foreground: root.bar ? root.bar.foreground : Color.foreground
+          onClicked: root.persistSetting("showLightning", !root.showLightning)
         }
 
         PanelSeparator { width: parent.width }
