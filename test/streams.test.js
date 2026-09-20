@@ -34,6 +34,11 @@ const PROCESSES = [
   { id: "tileCleanProc", file: "Service.qml", collects: false, builder: "TileCache.cleanCommand" },
   { id: "geocodeProc", file: "Panel.qml", collects: true, builder: "geocodingCommand" },
   { id: "locationSaveProc", file: "Panel.qml", collects: false, builder: null },
+  // The wind/pressure grid, the aurora grid and the Kp index: all bounded the
+  // same way, by the Overlay library that builds their commands.
+  { id: "gridProc", file: "Panel.qml", collects: true, builder: "gridCommand" },
+  { id: "auroraProc", file: "Panel.qml", collects: true, builder: "ovationCommand" },
+  { id: "kpProc", file: "Panel.qml", collects: true, builder: "kpCommand" },
 ]
 
 // Files read straight into the process, and why each one carries no ceiling of

@@ -29,7 +29,11 @@
       "smoothTiles": true,
       "showSnow": true,
       "showLabel": false,
-      "showLightning": false
+      "showRain": true,
+      "showLightning": false,
+      "showWind": false,
+      "showSynoptic": false,
+      "showSatellite": false
     },
     "schema": [
       {
@@ -116,6 +120,34 @@
         "label": "Lightning overlay",
         "defaultValue": false,
         "description": "Draw live lightning strikes over the radar, from the community LightningMaps/Blitzortung detection network. Also toggleable from the panel."
+      },
+      {
+        "key": "showRain",
+        "type": "boolean",
+        "label": "Rain overlay",
+        "defaultValue": true,
+        "description": "Draw the radar precipitation image. Turn it off to see the other overlays alone. Also toggleable from the panel."
+      },
+      {
+        "key": "showWind",
+        "type": "boolean",
+        "label": "Wind overlay",
+        "defaultValue": false,
+        "description": "Draw current wind vectors over the map, from Open-Meteo. Also toggleable from the panel."
+      },
+      {
+        "key": "showSynoptic",
+        "type": "boolean",
+        "label": "Synoptic overlay",
+        "defaultValue": false,
+        "description": "Draw sea-level pressure isobars over the map, computed from Open-Meteo. Also toggleable from the panel."
+      },
+      {
+        "key": "showSatellite",
+        "type": "boolean",
+        "label": "Satellite overlay",
+        "defaultValue": false,
+        "description": "Show NASA MODIS satellite imagery as the map's picture layer, under the radar. Also toggleable from the panel."
       }
     ]
   }

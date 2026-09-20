@@ -10,6 +10,7 @@ import "lib/Settings.js" as Settings
 import "lib/TileMath.js" as TileMath
 import "lib/RadarModel.js" as RadarModel
 import "lib/TileCache.js" as TileCache
+import "lib/Overlay.js" as Overlay
 
 // The radar panel.
 //
@@ -55,7 +56,28 @@ Panel {
   readonly property bool smoothTiles: Settings.smoothTiles(settings)
   readonly property bool showSnow: Settings.showSnow(settings)
   readonly property bool showLightning: Settings.showLightning(settings)
+  readonly property bool showRain: Settings.showRain(settings)
+  readonly property bool showWind: Settings.showWind(settings)
+  readonly property bool showSynoptic: Settings.showSynoptic(settings)
+  readonly property bool showSatellite: Settings.showSatellite(settings)
   readonly property int colorSchemeId: Settings.colorSchemeId(settings)
+
+  // The overlay chips, and what each one flips. Rain is the radar itself, so
+  // it is read with its default-on default rather than through boolean().
+  readonly property var layerOptions: [
+    { key: "rain", label: "Rain", on: root.showRain },
+    { key: "lightning", label: "Lightning", on: root.showLightning },
+    { key: "wind", label: "Wind", on: root.showWind },
+    { key: "synoptic", label: "Pressure", on: root.showSynoptic },
+    { key: "satellite", label: "Satellite", on: root.showSatellite }
+  ]
+
+  function toggleLayer(key) {
+    var setting = { rain: "showRain", lightning: "showLightning", wind: "showWind",
+                    synoptic: "showSynoptic", satellite: "showSatellite" }[key]
+    if (!setting) return
+    root.persistSetting(setting, !root[setting])
+  }
 
   // The service is the authority on lead time whenever it is mounted; the
   // fallback covers the moment before it is.
@@ -148,6 +170,9 @@ Panel {
     updateHome()
   }
   property bool panned: false
+
+  // Which tab is showing: "radar" or "aurora".
+  property string view: "radar"
 
   // ---------------------------------------------------------------------------
   // Location editing
@@ -605,10 +630,10 @@ Panel {
 
   // Credit for everything drawn on the map, in one place so it cannot fall out
   // of step with where the data actually comes from.
-  readonly property string attribution: "RainViewer · LightningMaps · Natural Earth"
+  readonly property string attribution: "RainViewer · LightningMaps · NASA GIBS · Open-Meteo · NOAA SWPC · Natural Earth"
 
-  function radarTileUrlA(z, x, y) { return root.radarTileUrlForTime(root.frameA, z, x, y) }
-  function radarTileUrlB(z, x, y) { return root.radarTileUrlForTime(root.frameB, z, x, y) }
+  function radarTileUrlA(z, x, y) { return root.showRain ? root.radarTileUrlForTime(root.frameA, z, x, y) : "" }
+  function radarTileUrlB(z, x, y) { return root.showRain ? root.radarTileUrlForTime(root.frameB, z, x, y) : "" }
 
   // One lightning tile, with the two-minute cache bucket in the URL so that
   // asking again after the server regenerates is not answered from a cache.
@@ -616,6 +641,9 @@ Panel {
     var bucket = Math.floor(Date.now() / 1000 / RadarModel.LIGHTNING_TILE_BUCKET_SEC)
     return RadarModel.lightningTileUrl(z, x, y, bucket)
   }
+
+  // One satellite tile, at the map's own zoom.
+  function satelliteTileUrlFor(z, x, y) { return Overlay.satelliteTileUrl(z, x, y) }
 
   // Bumped on a timer while the map is open with the overlay on, so the
   // lightning layer asks again where its tiles are to be loaded from. The URL
@@ -628,6 +656,163 @@ Panel {
     repeat: true
     running: root.opened && root.showLightning
     onTriggered: root.lightningEpoch++
+  }
+
+  // ---------------------------------------------------------------------------
+  // Wind and pressure overlay
+  // ---------------------------------------------------------------------------
+  //
+  // A view-sized grid is fetched from Open-Meteo whenever the view stops
+  // moving and either overlay is on, and the pressure contours are computed
+  // from it here. The grid follows the viewport: a request that does not cover
+  // what the map shows would leave the analysis sliding off the edge of the
+  // screen as the view moved.
+
+  readonly property bool needGrid: (root.showWind || root.showSynoptic) && root.view === "radar"
+
+  readonly property var gridBounds: {
+    if (!needGrid || !root.opened) return null
+    return Overlay.viewBounds(root.viewLatitude, root.viewLongitude, root.zoom, mapView.width, root.mapHeight)
+  }
+  readonly property var gridShape: gridBounds ? Overlay.gridShape(mapView.width, root.mapHeight) : null
+  readonly property var gridPoints: {
+    if (!gridBounds || !gridShape) return []
+    return Overlay.gridPoints(gridBounds, gridShape.cols, gridShape.rows)
+  }
+
+  // What the fetch depends on, so it is asked for again exactly when it would
+  // answer differently.
+  readonly property string gridKey: [
+    root.opened, root.needGrid,
+    gridBounds ? gridBounds.latMin.toFixed(4) + "," + gridBounds.latMax.toFixed(4) : "",
+    gridBounds ? gridBounds.lonMin.toFixed(4) + "," + gridBounds.lonMax.toFixed(4) : ""
+  ].join("|")
+  onGridKeyChanged: if (root.opened && root.needGrid) gridTimer.restart()
+
+  Timer {
+    id: gridTimer
+    interval: 250
+    onTriggered: root.requestGrid()
+  }
+
+  property var overlayPoints: []
+  property var overlayIsobars: []
+  property int overlayRevision: 0
+
+  function requestGrid() {
+    if (!root.needGrid || !root.opened || gridProc.running) return
+    var pts = root.gridPoints
+    var shape = root.gridShape
+    if (!shape || pts.length === 0) return
+    gridShapePending = shape
+    gridProc.answered = false
+    gridProc.command = Overlay.gridCommand(pts)
+    gridProc.running = true
+  }
+
+  property var gridShapePending: null
+
+  Process {
+    id: gridProc
+
+    // See geocodeProc: a process that cannot start emits nothing, and without
+    // an answered flag the analysis would keep the last view's data forever.
+    property bool answered: false
+
+    onExited: function(exitCode) {
+      answered = true
+      root.applyGrid(exitCode, gridOut.text)
+    }
+    onRunningChanged: if (!running && !answered) root.applyGrid(-1, "")
+
+    stdout: StdioCollector { id: gridOut; waitForEnd: true }
+  }
+
+  function applyGrid(exitCode, text) {
+    if (exitCode !== 0) return
+    var pts = Overlay.parseGrid(text)
+    var shape = root.gridShapePending
+    if (!pts || !shape) return
+    root.overlayPoints = pts
+    root.overlayIsobars = root.showSynoptic ? Overlay.isobars(pts, shape.cols, shape.rows, 4) : []
+    root.overlayRevision++
+  }
+
+  // ---------------------------------------------------------------------------
+  // Aurora (Aurora Australis tab)
+  // ---------------------------------------------------------------------------
+
+  property var auroraCells: []
+  property string auroraTime: ""
+  property real kpNow: NaN
+  property real kpPeak: NaN
+  property real auroraAtMs: 0
+
+  readonly property bool auroraTab: root.view === "aurora"
+
+  function refreshAurora() {
+    if (!root.auroraTab) return
+    if (!auroraProc.running) {
+      auroraProc.answered = false
+      auroraProc.command = Overlay.ovationCommand()
+      auroraProc.running = true
+    }
+    if (!kpProc.running) {
+      kpProc.answered = false
+      kpProc.command = Overlay.kpCommand()
+      kpProc.running = true
+    }
+  }
+
+  onAuroraTabChanged: if (root.auroraTab) Qt.callLater(root.refreshAurora)
+
+  // OVATION republishes every few minutes; asking again faster re-fetches the
+  // same grid.
+  Timer {
+    id: auroraRefresh
+    interval: 10 * 60 * 1000
+    repeat: true
+    running: root.opened && root.auroraTab
+    onTriggered: root.refreshAurora()
+  }
+
+  Process {
+    id: auroraProc
+    property bool answered: false
+    onExited: function(exitCode) {
+      answered = true
+      root.applyAurora(exitCode, auroraOut.text)
+    }
+    onRunningChanged: if (!running && !answered) root.applyAurora(-1, "")
+    stdout: StdioCollector { id: auroraOut; waitForEnd: true }
+  }
+
+  Process {
+    id: kpProc
+    property bool answered: false
+    onExited: function(exitCode) {
+      answered = true
+      root.applyKp(exitCode, kpOut.text)
+    }
+    onRunningChanged: if (!running && !answered) root.applyKp(-1, "")
+    stdout: StdioCollector { id: kpOut; waitForEnd: true }
+  }
+
+  function applyAurora(exitCode, text) {
+    if (exitCode !== 0) return
+    var data = Overlay.parseOvation(text, 3000)
+    if (!data) return
+    root.auroraCells = data.cells
+    root.auroraTime = data.observedTime
+    root.auroraAtMs = Date.now()
+  }
+
+  function applyKp(exitCode, text) {
+    if (exitCode !== 0) return
+    var data = Overlay.parseKp(text)
+    if (!data) return
+    root.kpNow = data.nowKp
+    root.kpPeak = data.peakForecast
   }
 
   // The radar tiles covering the view, at the zoom the radar is fetched at.
@@ -809,8 +994,46 @@ Panel {
         width: parent.width
         spacing: Style.space(10)
 
+        // The two views of this panel: the radar map and the aurora. The
+        // radar is the map and its overlays; the aurora is a polar view of
+        // the southern oval from NOAA OVATION.
+        Row {
+          id: tabs
+          width: parent.width
+          spacing: Style.space(6)
+          readonly property real cellWidth: (width - spacing) / 2
+
+          Button {
+            width: tabs.cellWidth
+            text: "RADAR"
+            fontSize: Style.font.bodySmall
+            fontFamily: Style.font.family
+            foreground: root.bar ? root.bar.foreground : Color.foreground
+            background: root.bar ? root.bar.background : Color.background
+            bordered: true
+            active: root.view === "radar"
+            onClicked: root.view = "radar"
+          }
+
+          Button {
+            width: tabs.cellWidth
+            text: "AURORA AUSTRALIS"
+            fontSize: Style.font.bodySmall
+            fontFamily: Style.font.family
+            foreground: root.bar ? root.bar.foreground : Color.foreground
+            background: root.bar ? root.bar.background : Color.background
+            bordered: true
+            active: root.view === "aurora"
+            onClicked: {
+              root.view = "aurora"
+              root.refreshAurora()
+            }
+          }
+        }
+
         RadarMap {
           id: mapView
+          visible: root.view === "radar"
           width: parent.width
           height: root.mapHeight
           bar: root.bar
@@ -827,6 +1050,15 @@ Panel {
           lightningEnabled: root.showLightning
           lightningTileUrlFor: root.lightningTileUrlFor
           lightningEpoch: root.lightningEpoch
+
+          satelliteEnabled: root.showSatellite
+          satelliteTileUrlFor: root.satelliteTileUrlFor
+
+          windEnabled: root.showWind
+          synopticEnabled: root.showSynoptic
+          overlayPoints: root.overlayPoints
+          overlayIsobars: root.overlayIsobars
+          overlayRevision: root.overlayRevision
 
           frameA: root.frameA
           frameB: root.frameB
@@ -887,6 +1119,7 @@ Panel {
         }
 
         Timeline {
+          visible: root.view === "radar"
           width: parent.width
           bar: root.bar
           frames: root.frames
@@ -901,27 +1134,58 @@ Panel {
           }
         }
 
-        PanelSeparator { width: parent.width }
+        PanelSeparator { width: parent.width; visible: root.view === "radar" }
 
-        // One row, and a deliberate exception to the heading rule above: this
-        // is a single switch on the thing right above it, not a section of its
-        // own — the map is what it governs, so it sits against the map.
-        Toggle {
+        // The layers drawn on the map, each independent, any combination. Rain
+        // is the radar itself and defaults on; the rest default off. Each chip
+        // is its own setting, so a combination chosen here survives the panel
+        // closing.
+        Column {
+          visible: root.view === "radar"
           width: parent.width
-          label: "Lightning overlay"
-          description: "Live strikes, from the community LightningMaps/Blitzortung network"
-          checked: root.showLightning
-          foreground: root.bar ? root.bar.foreground : Color.foreground
-          onClicked: root.persistSetting("showLightning", !root.showLightning)
+          spacing: Style.space(6)
+
+          PanelSectionHeader {
+            text: "OVERLAYS"
+            foreground: root.bar ? root.bar.foreground : Color.foreground
+            fontFamily: Style.font.family
+          }
+
+          Row {
+            id: layerChips
+            width: parent.width
+            spacing: Style.space(6)
+            readonly property real cellWidth: root.layerOptions.length > 0
+              ? (width - spacing * (root.layerOptions.length - 1)) / root.layerOptions.length
+              : 0
+
+            Repeater {
+              model: root.layerOptions
+
+              Button {
+                required property var modelData
+                width: layerChips.cellWidth
+                text: modelData.label
+                fontSize: Style.font.bodySmall
+                fontFamily: Style.font.family
+                foreground: root.bar ? root.bar.foreground : Color.foreground
+                background: root.bar ? root.bar.background : Color.background
+                bordered: true
+                active: modelData.on
+                onClicked: root.toggleLayer(modelData.key)
+              }
+            }
+          }
         }
 
-        PanelSeparator { width: parent.width }
+        PanelSeparator { width: parent.width; visible: root.view === "radar" }
 
         // Separator, then a small-caps heading at the content edge, then the
         // rows inset under it. That rail is the shape every dense first-party
         // panel is built on — audio, network, power, bluetooth — and without
         // it a panel reads as a stack of controls rather than as one of theirs.
         PanelSectionHeader {
+          visible: root.view === "radar"
           text: "LOCATION"
           foreground: root.bar ? root.bar.foreground : Color.foreground
           fontFamily: Style.font.family
@@ -929,6 +1193,7 @@ Panel {
 
         LocationPicker {
           id: locationPicker
+          visible: root.view === "radar"
           width: parent.width
           spacing: Style.space(6)
           bar: root.bar
@@ -949,9 +1214,10 @@ Panel {
           onSuggestionPicked: function(suggestion) { root.pickSuggestion(suggestion) }
         }
 
-        PanelSeparator { width: parent.width }
+        PanelSeparator { width: parent.width; visible: root.view === "radar" }
 
         AlertControls {
+          visible: root.view === "radar"
           width: parent.width
           // Sections need more air between them than rows do inside one.
           spacing: Style.space(12)
@@ -977,6 +1243,22 @@ Panel {
           // chosen here.
           onRadiusChosen: function(km) { root.persistSetting("alertRadiusKm", km) }
           onThresholdChosen: function(name) { root.persistSetting("alertMinIntensity", name) }
+        }
+
+        // The Aurora Australis view. Only its data matters here; the drawing
+        // is ui/AuroraView.qml.
+        AuroraView {
+          visible: root.view === "aurora"
+          width: parent.width
+          cells: root.auroraCells
+          observedTime: root.auroraTime
+          kpNow: root.kpNow
+          kpPeak: root.kpPeak
+          site: root.hasLocation
+            ? ({ latitude: root.homeLatitude, longitude: root.homeLongitude })
+            : null
+          foreground: root.bar ? root.bar.foreground : Color.foreground
+          accent: Color.accent
         }
       }
     }

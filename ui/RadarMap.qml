@@ -45,6 +45,20 @@ Item {
   property var lightningTileUrlFor: null
   property int lightningEpoch: 0
 
+  // The satellite picture layer. Drawn under the radar, like a base map with
+  // clouds in it; a plain XYZ raster source (NASA GIBS) at the map's own zoom.
+  property bool satelliteEnabled: false
+  property var satelliteTileUrlFor: null
+
+  // The wind and pressure analysis drawn over everything. `overlayPoints` is
+  // the Open-Meteo grid and `overlayIsobars` the contours computed from it by
+  // the panel; `overlayRevision` bumps whenever either is replaced.
+  property bool windEnabled: false
+  property bool synopticEnabled: false
+  property var overlayPoints: []
+  property var overlayIsobars: []
+  property var overlayRevision: 0
+
   // Which of the two radar layers holds which frame, by the frame's moment, and
   // which is in front. Bumping a layer's frame while it is behind, then
   // swapping, is what makes the loop dissolve instead of flicker.
@@ -160,6 +174,26 @@ Item {
       zoom: root.zoom
     }
 
+    // ---- Satellite imagery ------------------------------------------------
+    // NASA MODIS true colour under the radar: the picture layer. Requested at
+    // the map's own zoom and refreshed by the panel as the tiles turn over, so
+    // it fades in under a map that is otherwise radar over a drawn ground.
+    TileLayer {
+      id: satellite
+      anchors.fill: parent
+      visible: root.satelliteEnabled
+      centerLatitude: root.centerLatitude
+      centerLongitude: root.centerLongitude
+      zoom: root.zoom
+      tileUrlFor: root.satelliteEnabled ? root.satelliteTileUrlFor : null
+      revision: "satellite"
+      smooth: true
+      opacity: root.satelliteEnabled ? 1 : 0
+      Behavior on opacity {
+        NumberAnimation { duration: 380; easing.type: Easing.InOutQuad }
+      }
+    }
+
     TileLayer {
       id: radarA
       anchors.fill: parent
@@ -222,6 +256,25 @@ Item {
       Behavior on opacity {
         NumberAnimation { duration: 380; easing.type: Easing.InOutQuad }
       }
+    }
+
+    // ---- Wind and pressure analysis --------------------------------------
+    // Drawn over the radar from the panel's Open-Meteo grid. Not a tile: the
+    // vectors and contours are computed in the plugin and painted here, so
+    // they move with the view rather than arriving prerendered.
+    OverlayCanvas {
+      id: overlay
+      anchors.fill: parent
+      points: root.overlayPoints
+      isobars: root.overlayIsobars
+      showWind: root.windEnabled
+      showSynoptic: root.synopticEnabled
+      centerLatitude: root.centerLatitude
+      centerLongitude: root.centerLongitude
+      zoom: root.zoom
+      revision: root.overlayRevision + ":" + root.centerLatitude.toFixed(4) + ":" + root.centerLongitude.toFixed(4) + ":" + root.zoom
+      foreground: root.foreground
+      accent: Color.accent
     }
 
     // ---- Alert rings and home marker ------------------------------------

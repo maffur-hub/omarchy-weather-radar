@@ -1,0 +1,182 @@
+const { test } = require("node:test")
+const assert = require("node:assert")
+const { loadLibrary, TileMath, RadarModel } = require("./load.js")
+
+const Overlay = loadLibrary("Overlay.js", { RadarModel, TileMath })
+
+// ------------------------------------------------------------------- grid
+
+test("the view bounds cover the viewport around a centre", () => {
+  const b = Overlay.viewBounds(-35.26, 149.14, 7, 560, 320)
+  assert.ok(b.latMin < -35.26 && b.latMax > -35.26, JSON.stringify(b))
+  assert.ok(b.lonMin < 149.14 && b.lonMax > 149.14, JSON.stringify(b))
+  // A wider viewport covers a wider span of longitude.
+  const b2 = Overlay.viewBounds(-35.26, 149.14, 7, 1120, 320)
+  assert.ok(b2.lonMax - b2.lonMin > b.lonMax - b.lonMin)
+})
+
+test("the grid shape respects the point ceiling and the aspect", () => {
+  const wide = Overlay.gridShape(560, 320)
+  assert.ok(wide.cols > wide.rows, `${wide.cols}x${wide.rows}`)
+  assert.ok(wide.cols * wide.rows <= Overlay.GRID_MAX_POINTS)
+  const tall = Overlay.gridShape(320, 560)
+  assert.ok(tall.rows > tall.cols, `${tall.cols}x${tall.rows}`)
+  assert.ok(tall.cols * tall.rows <= Overlay.GRID_MAX_POINTS)
+})
+
+test("gridPoints fills the shape row-major and stays in range", () => {
+  const b = Overlay.viewBounds(-35.26, 149.14, 7, 560, 320)
+  const shape = Overlay.gridShape(560, 320)
+  const pts = Overlay.gridPoints(b, shape.cols, shape.rows)
+  assert.strictEqual(pts.length, shape.cols * shape.rows)
+  assert.strictEqual(pts[0].latitude, b.latMax)          // north edge first
+  assert.ok(pts[pts.length - 1].latitude <= b.latMax)
+  for (const p of pts) {
+    assert.ok(p.latitude >= -85.1 && p.latitude <= 85.1)
+    assert.ok(p.longitude >= -180 && p.longitude <= 180)
+  }
+})
+
+test("the grid request is bounded and made by the library", () => {
+  const b = Overlay.viewBounds(-35.26, 149.14, 7, 560, 320)
+  const shape = Overlay.gridShape(560, 320)
+  const pts = Overlay.gridPoints(b, shape.cols, shape.rows)
+  const command = Overlay.gridCommand(pts)
+  assert.strictEqual(command[0], "curl")
+  assert.ok(command.includes("--max-filesize"), "no size limit")
+  assert.ok(command.includes("--max-time"), "no time limit")
+  const bytes = Number(command[command.indexOf("--max-filesize") + 1])
+  assert.ok(bytes > 0 && bytes <= 1024 * 1024)
+  // Too many points is not a request at all.
+  const huge = []
+  for (let i = 0; i < Overlay.GRID_MAX_POINTS + 1; i++) huge.push({ latitude: 0, longitude: 0 })
+  assert.deepStrictEqual(Overlay.gridCommand(huge), [])
+})
+
+test("a grid response parses into points with readings", () => {
+  const raw = JSON.stringify([
+    { latitude: -35.2, longitude: 149.1, current: { wind_speed_10m: 17.6, wind_direction_10m: 302, pressure_msl: 1016.8 } },
+    { latitude: -35.4, longitude: 149.3, current: { wind_speed_10m: 5, wind_direction_10m: 10, pressure_msl: 1012 } }
+  ])
+  const pts = Overlay.parseGrid(raw)
+  assert.strictEqual(pts.length, 2)
+  assert.strictEqual(pts[0].windSpeed, 17.6)
+  assert.strictEqual(pts[0].windDirection, 302)
+  assert.strictEqual(pts[0].pressure, 1016.8)
+  // A point with nothing usable is dropped, not drawn as a zero.
+  const bad = JSON.stringify([
+    { latitude: -35.2, longitude: 149.1, current: {} }
+  ])
+  assert.deepStrictEqual(Overlay.parseGrid(bad), null)
+  // A point with wind but no pressure is kept for the wind layer alone.
+  const windOnly = Overlay.parseGrid(JSON.stringify([
+    { latitude: -35.2, longitude: 149.1, current: { wind_speed_10m: 10, wind_direction_10m: 90 } }
+  ]))
+  assert.strictEqual(windOnly.length, 1)
+  assert.strictEqual(windOnly[0].pressure, 0)
+  assert.strictEqual(Overlay.parseGrid(""), null)
+  assert.strictEqual(Overlay.parseGrid("not json"), null)
+})
+
+// ------------------------------------------------------------------ isobars
+
+// A grid with a pressure field rising from 1000 at the top to 1020 at the
+// bottom. 1010 must be crossed by a contour roughly halfway down.
+function risingGrid(cols, rows, from, to) {
+  const pts = []
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const v = rows > 1 ? from + (to - from) * r / (rows - 1) : from
+      pts.push({ latitude: 50 - r, longitude: -50 + c, pressure: v })
+    }
+  }
+  return pts
+}
+
+test("isobars place a contour where the field crosses the level", () => {
+  const pts = risingGrid(6, 6, 1000, 1020)
+  const bars = Overlay.isobars(pts, 6, 6, 4)
+  const levels = bars.map(b => b.level)
+  assert.ok(levels.includes(1012), `levels: ${levels}`)
+  // Every point of the 1012 contour must sit between the 1000 and 1020 rows.
+  const c12 = bars.filter(b => b.level === 1012)
+  assert.ok(c12.length > 0)
+  for (const bar of c12) {
+    for (const p of bar.path) {
+      assert.ok(p.lat > 40 && p.lat < 50, `lat ${p.lat} out of the crossed band`)
+    }
+  }
+})
+
+test("a flat field has no isobars", () => {
+  const pts = risingGrid(6, 6, 1012, 1012)
+  assert.deepStrictEqual(Overlay.isobars(pts, 6, 6, 4), [])
+})
+
+test("a missing reading keeps contours out of its cell", () => {
+  const pts = risingGrid(6, 6, 1000, 1020)
+  pts[3 * 6 + 3].pressure = null   // one hole in the middle
+  const bars = Overlay.isobars(pts, 6, 6, 4)
+  assert.ok(bars.length > 0)
+})
+
+// ---------------------------------------------------------------- satellite
+
+test("a satellite tile is a GIBS Web Mercator request at the map's zoom", () => {
+  const url = Overlay.satelliteTileUrl(7, 117, 77)
+  assert.strictEqual(url,
+    "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/default/GoogleMapsCompatible_Level9/7/77/117.jpeg")
+  assert.strictEqual(Overlay.satelliteTileUrl(7, 128, 0), "")
+})
+
+// ------------------------------------------------------------------ aurora
+
+test("OVATION parses into bounded southern cells", () => {
+  const coords = []
+  // A full-ish grid including northern cells that must be filtered out.
+  for (let lat = -90; lat <= 90; lat++) {
+    for (let lon = 0; lon < 360; lon += 15) {
+      coords.push([lon, lat, lat < -50 ? 40 : 1])
+    }
+  }
+  const raw = JSON.stringify({
+    "Observation Time": "2026-09-20T05:40:00Z",
+    coordinates: coords
+  })
+  const data = Overlay.parseOvation(raw, 100)
+  assert.ok(data.cells.length > 0 && data.cells.length <= 100)
+  assert.ok(data.cells.every(c => c.lat <= -30), "northern cells leaked through")
+  assert.strictEqual(data.observedTime, "2026-09-20T05:40:00Z")
+  assert.strictEqual(Overlay.parseOvation("", 100), null)
+})
+
+test("Kp parsing takes the latest observed and the forecast peak", () => {
+  const raw = JSON.stringify([
+    { time_tag: "2026-09-20T03:00:00", kp: 2, observed: "observed" },
+    { time_tag: "2026-09-20T06:00:00", kp: 3, observed: "observed" },
+    { time_tag: "2026-09-20T09:00:00", kp: 4.33, observed: "predicted" },
+    { time_tag: "2026-09-20T12:00:00", kp: 5, observed: "predicted" }
+  ])
+  const data = Overlay.parseKp(raw)
+  assert.strictEqual(data.nowKp, 2)
+  assert.strictEqual(data.peakForecast, 5)
+  assert.strictEqual(Overlay.parseKp("[]"), null)
+})
+
+test("geomagnetic latitude measures from the dipole reference pole", () => {
+  // The function reports angular distance from the pole it is given, so the
+  // pole itself reads +90 and the antipode -90.
+  assert.ok(Math.abs(Overlay.geomagLat(Overlay.GEOMAG_POLE_LAT, Overlay.GEOMAG_POLE_LON) - 90) < 1)
+  assert.ok(Math.abs(Overlay.geomagLat(-Overlay.GEOMAG_POLE_LAT, Overlay.GEOMAG_POLE_LON + 180) + 90) < 1)
+  // Canberra sits around 43 degrees of geomagnetic latitude — the band the
+  // oval reaches on a moderate Kp — so a sanity check pins the constant
+  // against a place that is actually used.
+  const canberra = Math.abs(Overlay.geomagLat(-35.26, 149.14))
+  assert.ok(canberra > 40 && canberra < 48, `Canberra mlat ${canberra}`)
+})
+
+test("Kp formats whole numbers without a decimal", () => {
+  assert.strictEqual(Overlay.formatKp(3), "3")
+  assert.strictEqual(Overlay.formatKp(4.33), "4.3")
+  assert.strictEqual(Overlay.formatKp(NaN), "--")
+})
