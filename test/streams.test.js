@@ -34,8 +34,10 @@ const PROCESSES = [
   { id: "tileCleanProc", file: "Service.qml", collects: false, builder: "TileCache.cleanCommand" },
   { id: "geocodeProc", file: "Panel.qml", collects: true, builder: "geocodingCommand" },
   { id: "locationSaveProc", file: "Panel.qml", collects: false, builder: null },
-  // The wind/pressure grid, the aurora grid and the Kp index: all bounded the
-  // same way, by the Overlay library that builds their commands.
+  // The wind/pressure grid, the aurora grid, the Kp index and the weather
+  // fetch: all bounded the same way, by the library that builds their
+  // commands — Overlay for the map and the space weather, Weather for the
+  // forecast.
   { id: "gridProc", file: "Panel.qml", collects: true, builder: "gridCommand" },
   { id: "auroraProc", file: "Panel.qml", collects: true, builder: "ovationCommand" },
   { id: "kpProc", file: "Panel.qml", collects: true, builder: "kpCommand" },
@@ -43,6 +45,7 @@ const PROCESSES = [
   { id: "magProc", file: "Panel.qml", collects: true, builder: "magCommand" },
   { id: "fluxProc", file: "Panel.qml", collects: true, builder: "fluxCommand" },
   { id: "flareProc", file: "Panel.qml", collects: true, builder: "flareCommand" },
+  { id: "weatherProc", file: "Panel.qml", collects: true, builder: "weatherCommand" },
 ]
 
 // Files read straight into the process, and why each one carries no ceiling of

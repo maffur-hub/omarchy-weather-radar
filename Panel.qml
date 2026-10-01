@@ -11,6 +11,7 @@ import "lib/TileMath.js" as TileMath
 import "lib/RadarModel.js" as RadarModel
 import "lib/TileCache.js" as TileCache
 import "lib/Overlay.js" as Overlay
+import "lib/Weather.js" as Weather
 
 // The radar panel.
 //
@@ -171,7 +172,7 @@ Panel {
   }
   property bool panned: false
 
-  // Which tab is showing: "radar" or "aurora".
+  // Which tab is showing: "radar", "aurora" or "weather".
   property string view: "radar"
 
   // ---------------------------------------------------------------------------
@@ -590,6 +591,9 @@ Panel {
     // retries the tiles that failed while it was closed (see the service's
     // retryFailedTiles), and the layers have to notice.
     frameEpoch++
+    // The weather tab asks the same question the other two do of their own
+    // data: what is true now, wherever it was left.
+    if (root.weatherTab) Qt.callLater(root.refreshWeather)
     // The canvas can only read pixels while it is on screen, so opening is
     // the moment to ask.
     Qt.callLater(function() { coverageProbe.probe() })
@@ -900,6 +904,101 @@ Panel {
     root.kpPeak = data.peakForecast
   }
 
+  // ---------------------------------------------------------------------------
+  // Weather (Weather tab)
+  // ---------------------------------------------------------------------------
+  // A full forecast and the rainfall record for the configured location, from
+  // the same Open-Meteo service the overlays and the alerts already use. Unlike
+  // the alert forecast — five sample points, fetched only while the watch is on
+  // — this is one point, fetched only while the tab is open, and it carries the
+  // daily history the rain chart needs. The drawing is ui/WeatherView.qml.
+
+  property var weather: null
+  property real weatherAtMs: 0
+  property bool weatherFailed: false
+  property string weatherRequestKey: ""
+
+  readonly property bool weatherTab: root.view === "weather"
+  readonly property string weatherKey: root.hasLocation
+    ? root.homeLatitude.toFixed(4) + "," + root.homeLongitude.toFixed(4)
+    : ""
+
+  function refreshWeather() {
+    if (!root.weatherTab || !root.hasLocation || weatherProc.running) return
+    var command = Weather.weatherCommand(root.homeLatitude, root.homeLongitude)
+    if (!command || command.length === 0) return
+    root.weatherRequestKey = root.weatherKey
+    weatherProc.answered = false
+    weatherProc.command = command
+    weatherProc.running = true
+  }
+
+  onWeatherTabChanged: if (root.weatherTab) Qt.callLater(root.refreshWeather)
+
+  onWeatherKeyChanged: {
+    if (!root.opened || !root.weatherTab) return
+    // A place that just moved has no forecast of its own until this one lands.
+    // Keeping the previous place's would be a reading for somewhere else under
+    // the new name; only clear it while there is a place to replace it with.
+    if (root.hasLocation) {
+      root.weather = null
+      root.weatherFailed = false
+    }
+    weatherDebounce.restart()
+  }
+
+  Timer {
+    id: weatherDebounce
+    interval: 300
+    onTriggered: root.refreshWeather()
+  }
+
+  // Open-Meteo rebuilds its model every few hours; asking more often only
+  // re-fetches the same forecast.
+  Timer {
+    id: weatherRefresh
+    interval: 30 * 60 * 1000
+    repeat: true
+    running: root.opened && root.weatherTab
+    onTriggered: root.refreshWeather()
+  }
+
+  Process {
+    id: weatherProc
+
+    // See geocodeProc: a process that cannot start emits nothing, and without
+    // an answered flag the view would show "loading" for the session.
+    property bool answered: false
+
+    onExited: function(exitCode) {
+      answered = true
+      root.applyWeather(exitCode, weatherOut.text)
+    }
+    onRunningChanged: if (!running && !answered) root.applyWeather(-1, "")
+
+    stdout: StdioCollector { id: weatherOut; waitForEnd: true }
+  }
+
+  function applyWeather(exitCode, text) {
+    var key = root.weatherRequestKey
+    root.weatherRequestKey = ""
+
+    // A response only answers the question that was asked. If the location
+    // moved while curl was out this belongs to the old place: drop it and ask
+    // again for the new one.
+    if (key !== root.weatherKey) {
+      if (root.weatherTab && root.hasLocation) Qt.callLater(root.refreshWeather)
+      return
+    }
+    if (exitCode !== 0) { root.weatherFailed = true; return }
+
+    var parsed = Weather.parseWeather(text)
+    if (!parsed) { root.weatherFailed = true; return }
+    root.weather = parsed
+    root.weatherAtMs = Date.now()
+    root.weatherFailed = false
+  }
+
   // The radar tiles covering the view, at the zoom the radar is fetched at.
   readonly property var viewTiles: {
     var scale = Math.pow(2, zoom - radarSourceZoom)
@@ -1079,14 +1178,16 @@ Panel {
         width: parent.width
         spacing: Style.space(10)
 
-        // The two views of this panel: the radar map and the aurora. The
-        // radar is the map and its overlays; the aurora is a polar view of
-        // the southern oval from NOAA OVATION.
+        // The three views of this panel: the radar map, the weather forecast
+        // and the aurora. The radar is the map and its overlays; the weather
+        // tab is the current conditions, the seven-day outlook and the
+        // rainfall record; the aurora is a polar view of the southern oval
+        // from NOAA OVATION.
         Row {
           id: tabs
           width: parent.width
           spacing: Style.space(6)
-          readonly property real cellWidth: (width - spacing) / 2
+          readonly property real cellWidth: (width - spacing * 2) / 3
 
           Button {
             width: tabs.cellWidth
@@ -1098,6 +1199,21 @@ Panel {
             bordered: true
             active: root.view === "radar"
             onClicked: root.view = "radar"
+          }
+
+          Button {
+            width: tabs.cellWidth
+            text: "WEATHER"
+            fontSize: Style.font.bodySmall
+            fontFamily: Style.font.family
+            foreground: root.bar ? root.bar.foreground : Color.foreground
+            background: root.bar ? root.bar.background : Color.background
+            bordered: true
+            active: root.view === "weather"
+            onClicked: {
+              root.view = "weather"
+              root.refreshWeather()
+            }
           }
 
           Button {
@@ -1349,6 +1465,22 @@ Panel {
           site: root.hasLocation
             ? ({ latitude: root.homeLatitude, longitude: root.homeLongitude })
             : null
+          foreground: root.bar ? root.bar.foreground : Color.foreground
+          accent: Color.accent
+        }
+
+        // The Weather view: current conditions, the 7-day outlook, the
+        // rainfall record and the next 48 hours. Only its data matters here;
+        // the drawing is ui/WeatherView.qml.
+        WeatherView {
+          visible: root.view === "weather"
+          width: parent.width
+          weather: root.weather
+          locationName: root.locationName
+          // With no location there is nothing to fetch, so "Loading" would be a
+          // promise the tab cannot keep; it reads as no forecast instead.
+          loading: root.weather === null && !root.weatherFailed && root.hasLocation
+          failed: root.weatherFailed
           foreground: root.bar ? root.bar.foreground : Color.foreground
           accent: Color.accent
         }

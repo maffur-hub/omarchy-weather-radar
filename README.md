@@ -220,6 +220,33 @@ both messages clear on their own once the tiles arrive. Tiles
 already on disk never raise either message, so a loop fetched earlier plays
 offline without a warning over it.
 
+## The weather tab
+
+Between the map and the aurora sits the **WEATHER** tab: the forecast where
+you are, from [Open-Meteo](https://open-meteo.com) — the service the overlays
+and the alert forecast already call — for the same location, city name and
+coordinate the map uses. It is asked for only while the tab is open, and
+again every half hour for as long as it stays there; with the panel closed it
+fetches nothing at all.
+
+What is on it:
+
+- **Now** — the glyph, the temperature in °C, what it feels like, humidity,
+  wind in km/h with its direction, gusts, and today's high and low.
+- **Rain** — what has fallen so far today, what the last seven days came to,
+  and a bar for each of those seven days, today's picked out in the accent
+  colour.
+- **Next 48 hours** — a row per hour, scrolled sideways: the hour, the glyph,
+  the temperature, and the chance of rain in percent where there is one.
+- **7-day forecast** — one row per day: the day, the glyph, the description,
+  the chance of rain, the rainfall expected, and the high over the low.
+
+The units are metric throughout — °C, mm, km/h — the way the rest of the
+plugin asks for them. A reading the forecast does not have is left out of its
+line rather than printed as a zero, and a request that fails keeps the last
+forecast on screen: the tab says `Forecast unavailable` only when it has
+nothing at all to show.
+
 ## Location
 
 Click the city name at the bottom of the panel and type to search.

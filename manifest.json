@@ -5,7 +5,7 @@
   "version": "0.3.0",
   "author": "Eduardo Dalle Cort",
   "license": "MIT",
-  "description": "Live weather radar map in the Omarchy bar, with optional storm alerts for your location.",
+  "description": "Live weather radar map in the Omarchy bar, with a forecast, the rainfall record and optional storm alerts for your location.",
   "kinds": [
     "service",
     "bar-widget"
@@ -16,7 +16,7 @@
   },
   "barWidget": {
     "displayName": "Weather Radar",
-    "description": "Weather radar map with a two-hour loop, plus optional alerts when precipitation approaches.",
+    "description": "Weather radar map with a two-hour loop, plus a forecast, the rainfall record and optional alerts when precipitation approaches.",
     "category": "Info",
     "allowMultiple": false,
     "defaultSection": "right",
