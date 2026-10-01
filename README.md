@@ -62,13 +62,16 @@ That deletes the plugin and its entry in the bar. It leaves
 `~/.local/state/omarchy/settings/weather.json` alone, since that file belongs to
 the stock weather widget rather than to this plugin.
 
-Two files of the plugin's own stay behind as well, and both are safe to delete:
+Three files of the plugin's own stay behind as well, and all are safe to delete:
 the radar tiles it keeps (see [What it keeps on disk](#what-it-keeps-on-disk)),
-and the record of the last storm alert (see [Being told once](#being-told-once)).
+the record of the last storm alert (see
+[Being told once](#being-told-once)), and the last forecast it drew (see
+[The weather tab](#the-weather-tab)).
 
 ```bash
 rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/omarchy/plugins/eduardodallecort.weather-radar"
 rm -f ~/.local/state/omarchy/weather-radar-alert.json
+rm -f ~/.local/state/omarchy/weather-radar-weather.json
 ```
 
 ### Requirements
@@ -78,7 +81,8 @@ nothing at all — it ships with the plugin. The plugin calls
 `omarchy-weather-location` to store a chosen city and `omarchy-notification-send`
 to raise an alert — both ship with Omarchy. Nothing else is installed, and no
 configuration outside the widget's own entry is written. Besides that entry it
-writes only the radar tile cache and the alert record named above.
+writes only the radar tile cache, the alert record and the cached forecast
+named above.
 
 ## The map
 
@@ -139,9 +143,11 @@ that draws the bar. If the cache cannot be written, a full disk or a directory
 that cannot be made, the map says so in the journal and loads tiles straight
 from the network for the rest of the session.
 
-The only other file the plugin writes is small: the record of the last storm
+The plugin writes two small files of its own: the record of the last storm
 alert, in `~/.local/state/omarchy/weather-radar-alert.json`, described under
-[Being told once](#being-told-once).
+[Being told once](#being-told-once), and the last good forecast behind the
+Weather tab, in `~/.local/state/omarchy/weather-radar-weather.json`, described
+under [The weather tab](#the-weather-tab).
 
 ### What the colours mean
 
@@ -225,19 +231,36 @@ offline without a warning over it.
 Between the map and the aurora sits the **WEATHER** tab: the forecast where
 you are, from [Open-Meteo](https://open-meteo.com) — the service the overlays
 and the alert forecast already call — for the same location, city name and
-coordinate the map uses. It is asked for only while the tab is open, and
-again every half hour for as long as it stays there; with the panel closed it
-fetches nothing at all.
+coordinate the map uses.
+
+The fetch belongs to the service rather than to the panel that draws it, and
+that is what the tab's own state is counted for: the service counts the panels
+currently showing the tab **while those panels are open**, and asks again
+every half hour while that count is above zero. Two monitors with the tab up
+therefore cost one request between them, and the reading outlives the panel
+it was asked for, so reopening has something to show at once. Closing the
+panel stops the asking — so does switching to the map or the aurora, or never
+opening the tab at all — while opening the panel on the tab, opening the tab
+itself, and moving the city under it all ask for the current reading then and
+there.
 
 What is on it:
 
 - **Now** — the glyph, the temperature in °C, what it feels like, humidity,
-  wind in km/h with its direction, gusts, and today's high and low.
+  wind in km/h with its direction, gusts, and today's high and low; under
+  those, today's sunrise, sunset and peak UV, each left out when the forecast
+  has no figure for it.
 - **Rain** — what has fallen so far today, what the last seven days came to,
   and a bar for each of those seven days, today's picked out in the accent
-  colour.
+  colour. Between the figures and the bars, one line for what is coming: when
+  the next rain is due — "tomorrow" marked as such when it crosses midnight —
+  and how much of it the next twelve or twenty-four hours carry, or that none
+  is expected in the next day at all.
 - **Next 48 hours** — a row per hour, scrolled sideways: the hour, the glyph,
-  the temperature, and the chance of rain in percent where there is one.
+  the temperature, and the chance of rain in percent where there is one. Where
+  the strip crosses into a new day the hour is replaced by that day's weekday,
+  in the accent colour and bold, so the boundary is seen rather than counted
+  out in hours.
 - **7-day forecast** — one row per day: the day, the glyph, the description,
   the chance of rain, the rainfall expected, and the high over the low.
 
@@ -246,6 +269,15 @@ plugin asks for them. A reading the forecast does not have is left out of its
 line rather than printed as a zero, and a request that fails keeps the last
 forecast on screen: the tab says `Forecast unavailable` only when it has
 nothing at all to show.
+
+The last good reading is kept in
+`~/.local/state/omarchy/weather-radar-weather.json`, so restarting the shell
+draws the tab immediately instead of behind a `Loading forecast…` while the
+first request goes out — and the tab still has something to show when there is
+no network to ask. The file holds the place it belongs to as well as the
+reading, and is only ever taken for the place configured now: a forecast
+stored under another city's coordinates is ignored rather than shown under
+this one's name.
 
 ## Location
 
@@ -514,7 +546,7 @@ wherever that can be done outside the shell (see [Tests](#tests)).
 
 | File | |
 | --- | --- |
-| `Service.qml` | headless singleton: frame manifest, radar tile cache, forecast polling, alert decisions |
+| `Service.qml` | headless singleton: frame manifest, radar tile cache, forecast polling, the Weather tab's fetch and its cached reading, alert decisions |
 | `Panel.qml` | panel state and lifecycle; composes the pieces below |
 | `BarWidget.qml` | the bar pill |
 | `ui/RadarMap.qml` | basemap, radar layers, alert rings, pan and zoom |
@@ -525,10 +557,12 @@ wherever that can be done outside the shell (see [Tests](#tests)).
 | `ui/LocationPicker.qml` | the city row and its search results |
 | `ui/AlertControls.qml` | the alert switch, radius and threshold |
 | `ui/ChoiceSection.qml` | a heading, what it costs, and a row of equal buttons |
+| `ui/WeatherView.qml` | the Weather tab: now with the sun's hours and UV, the rain summary over the rainfall chart, the next 48 hours with the day boundaries marked, the outlook |
 | `lib/TileMath.js` | Web Mercator projection, distance and bearing |
 | `lib/RadarModel.js` | RainViewer endpoints, parsing, echo analysis, sampling |
 | `lib/TileCache.js` | where each radar tile is kept on disk, and the commands that fetch and delete them |
 | `lib/Alerts.js` | intensity bands, forecast reduction, the latch, and what the panel says |
+| `lib/Weather.js` | the Open-Meteo request behind the Weather tab, and everything in the answer the tab draws |
 | `lib/Settings.js` | reading and coercing the widget's settings |
 | `lib/Basemap.js` | decodes `data/basemap.bin` and projects it into the viewport |
 | `lib/Frames.js` | which radar frame to show, across a list that keeps being replaced |

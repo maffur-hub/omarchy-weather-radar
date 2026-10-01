@@ -102,6 +102,14 @@ function parsed() {
   return parsedOnce
 }
 
+// The fixture with fields moved, so a test can put rain where it needs it
+// without a second fixture builder.
+function parsedWith(move) {
+  const data = fixture()
+  move(data)
+  return Weather.parseWeather(JSON.stringify(data))
+}
+
 // ------------------------------------------------------------------ request
 
 test("the weather request is bounded and asks for the whole window", () => {
@@ -132,6 +140,34 @@ test("coordinates that are not numbers build no request at all", () => {
   assert.deepStrictEqual(Weather.weatherCommand(null, null), [])
   assert.deepStrictEqual(Weather.weatherCommand(NaN, 1), [])
   assert.strictEqual(Weather.weatherUrl("abc", 1), "")
+})
+
+test("the hourly list asks only for the fields the strip draws", () => {
+  const url = Weather.weatherUrl(-35.15, 149.13)
+  const hourly = url.match(/&hourly=([^&]*)/)[1]
+  assert.strictEqual(hourly,
+    "temperature_2m,apparent_temperature,precipitation,precipitation_probability,weather_code,is_day")
+  // Humidity and wind are still asked for — off the current reading, where
+  // the tab reads them.
+  const current = url.match(/&current=([^&]*)/)[1]
+  assert.ok(current.includes("relative_humidity_2m"), current)
+  assert.ok(current.includes("wind_speed_10m"), current)
+})
+
+test("the refresh cadence is a constant beside the window it re-asks for", () => {
+  assert.strictEqual(Weather.WEATHER_REFRESH_MS, 30 * 60 * 1000)
+})
+
+test("the cache path is built only from an absolute home", () => {
+  assert.strictEqual(Weather.weatherCachePath("/home/someone"),
+    "/home/someone/.local/state/omarchy/weather-radar-weather.json")
+  assert.strictEqual(Weather.weatherCachePath("/home/someone/"),
+    "/home/someone/.local/state/omarchy/weather-radar-weather.json")
+  // An unset home reads as null, and "null/.local/..." would be a path
+  // relative to wherever the shell happened to start.
+  for (const home of [undefined, null, "", "null", "relative/home", "/home/a\nb"]) {
+    assert.strictEqual(Weather.weatherCachePath(home), "", String(home))
+  }
 })
 
 // ------------------------------------------------------------------ parsing
@@ -183,6 +219,106 @@ test("the rain chart covers the seven days ending today", () => {
   assert.strictEqual(rain.maxMm, 3.8)
   assert.strictEqual(rain.days[6].mm, 3.8)
   assert.strictEqual(rain.days[6].isToday, true)
+})
+
+test("every hourly entry carries its date, weekday and midnight flag", () => {
+  const hourly = parsed().hourly
+  const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+  for (const hour of hourly) {
+    assert.strictEqual(hour.date, hour.time.substring(0, 10), hour.time)
+    assert.strictEqual(hour.weekday,
+      names[new Date(hour.date + "T12:00:00").getDay()], hour.time)
+    assert.strictEqual(hour.isMidnight,
+      hour.time.substring(11, 16) === "00:00", hour.time)
+  }
+  assert.strictEqual(hourly[0].date, TODAY)
+  assert.strictEqual(hourly[0].weekday, "Thu")
+  assert.strictEqual(hourly[0].isMidnight, false)
+  // The first midnight inside the strip, one row per hour after 23:00.
+  assert.strictEqual(hourly[5].time, "2026-10-02T00:00")
+  assert.strictEqual(hourly[5].date, "2026-10-02")
+  assert.strictEqual(hourly[5].weekday, "Fri")
+  assert.strictEqual(hourly[5].isMidnight, true)
+})
+
+test("the next-hours sums count only hours still ahead and skip dropped readings", () => {
+  const rain = parsedWith(data => {
+    data.hourly.precipitation[23] = 9.9   // 18:00, already past
+    data.hourly.precipitation[24] = 9.9   // 19:00, the current hour
+    data.hourly.precipitation[25] = 1.0   // 20:00, the first future hour
+    data.hourly.precipitation[26] = 0.5   // 21:00
+    data.hourly.precipitation[27] = null  // 22:00, dropped by the provider
+    data.hourly.precipitation[28] = 0.4   // 23:00
+    data.hourly.precipitation[37] = 0.6   // the twelfth counted future hour
+    data.hourly.precipitation[40] = 0.3   // past the twelfth, inside the 24th
+  }).rain
+  // The dropped reading does not consume one of the twelve: with it
+  // skipped, the twelfth counted hour is 08:00 tomorrow and its 0.6 mm
+  // belongs to both totals, while the 0.3 mm at 11:00 falls past the
+  // twelfth and inside the twenty-fourth. The 9.9 mm sitting on past and
+  // current hours reaches neither.
+  assert.strictEqual(rain.next12Mm, 2.5)
+  assert.strictEqual(rain.next24Mm, 2.8)
+})
+
+test("nextStart is the first future hour that reaches a tenth of a millimetre", () => {
+  const rain = parsedWith(data => {
+    data.hourly.precipitation[25] = 0.05  // the first future hour, too little
+    data.hourly.precipitation[26] = null  // dropped, so never a candidate
+    data.hourly.precipitation[27] = 0.14  // the first to reach 0.1
+  }).rain
+  assert.deepStrictEqual(rain.nextStart, {
+    time: "2026-10-01T22:00",
+    label: "22:00",
+    weekday: "Thu",
+    dayOffset: 0,
+    mm: 0.1
+  })
+})
+
+test("nextStart past midnight reads dayOffset 1 and the second day's weekday", () => {
+  const rain = parsedWith(data => {
+    // Nothing between now and midnight reaches the threshold.
+    data.hourly.precipitation[29] = 0.7
+  }).rain
+  assert.deepStrictEqual(rain.nextStart, {
+    time: "2026-10-02T00:00",
+    label: "00:00",
+    weekday: "Fri",
+    dayOffset: 1,
+    mm: 0.7
+  })
+})
+
+test("nextStart stays null while no future hour reaches a tenth", () => {
+  const rain = parsed().rain
+  assert.strictEqual(rain.nextStart, null)
+  assert.strictEqual(rain.next12Mm, 0)
+  assert.strictEqual(rain.next24Mm, 0)
+})
+
+test("today so far off the hour adds the current 15-minute reading", () => {
+  const rain = parsedWith(data => {
+    data.current.time = "2026-10-01T19:30"
+    data.current.precipitation = 0.4
+    // The row at 19:00 covered 18:00-19:00 and is complete; the row at
+    // 20:00 is a forecast of rain that has not fallen.
+    data.hourly.precipitation[24] = 0.6
+    data.hourly.precipitation[25] = 5.0
+  }).rain
+  // Nineteen complete rows (00:00-18:00 at 0.2), the completed 19:00 row,
+  // and the 15 minutes since — but not the 5.0 mm forecast for 20:00.
+  assert.strictEqual(rain.todayMm, 4.8)
+})
+
+test("today so far exactly on the hour does not add the current reading", () => {
+  const rain = parsedWith(data => {
+    data.current.precipitation = 0.4
+    data.hourly.precipitation[24] = 0.6
+  }).rain
+  // The complete rows alone: at :00 the 15-minute window sits inside the
+  // hourly row valid at 19:00, which the sum already counts.
+  assert.strictEqual(rain.todayMm, 4.4)
 })
 
 // --------------------------------------------------------------- semantics

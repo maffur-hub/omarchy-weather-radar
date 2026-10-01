@@ -26,6 +26,11 @@ const everything = Object.values(source).join("\n")
 const PROCESSES = [
   { id: "manifestProc", file: "Service.qml", collects: true, builder: "manifestCommand" },
   { id: "forecastProc", file: "Service.qml", collects: true, builder: "forecastCommand" },
+  // The Weather tab's own point forecast, in the service rather than in the
+  // panel so that every monitor showing the tab dedupes to one request and the
+  // reading outlives a panel reload. Bounded like the alert forecast: by the
+  // library that builds the command.
+  { id: "weatherProc", file: "Service.qml", collects: true, builder: "weatherCommand" },
   { id: "notifyProc", file: "Service.qml", collects: false, builder: null },
   // The radar tiles go to disk, not into the process. What is collected is
   // curl's own report, a line per tile in a format and with paths this plugin
@@ -34,10 +39,9 @@ const PROCESSES = [
   { id: "tileCleanProc", file: "Service.qml", collects: false, builder: "TileCache.cleanCommand" },
   { id: "geocodeProc", file: "Panel.qml", collects: true, builder: "geocodingCommand" },
   { id: "locationSaveProc", file: "Panel.qml", collects: false, builder: null },
-  // The wind/pressure grid, the aurora grid, the Kp index and the weather
-  // fetch: all bounded the same way, by the library that builds their
-  // commands — Overlay for the map and the space weather, Weather for the
-  // forecast.
+  // The wind/pressure grid and the aurora readings: all bounded the same way,
+  // by the library that builds their commands — Overlay for the map and the
+  // space weather.
   { id: "gridProc", file: "Panel.qml", collects: true, builder: "gridCommand" },
   { id: "auroraProc", file: "Panel.qml", collects: true, builder: "ovationCommand" },
   { id: "kpProc", file: "Panel.qml", collects: true, builder: "kpCommand" },
@@ -45,11 +49,10 @@ const PROCESSES = [
   { id: "magProc", file: "Panel.qml", collects: true, builder: "magCommand" },
   { id: "fluxProc", file: "Panel.qml", collects: true, builder: "fluxCommand" },
   { id: "flareProc", file: "Panel.qml", collects: true, builder: "flareCommand" },
-  { id: "weatherProc", file: "Panel.qml", collects: true, builder: "weatherCommand" },
 ]
 
 // Files read straight into the process, and why each one carries no ceiling of
-// its own. All three are deliberate; see the tests for the reasoning.
+// its own. All four are deliberate; see the tests for the reasoning.
 const FILE_READS = [
   { id: "locationFile", file: "Service.qml" },
   { id: "basemapFile", file: "Service.qml" },
@@ -60,6 +63,12 @@ const FILE_READS = [
   // the bands, and `latchPlaceKey` caps the only unbounded field, which leaves
   // the record bounded by construction rather than by good behaviour upstream.
   { id: "latchFile", file: "Service.qml" },
+  // The cached reading behind the Weather tab: this plugin's own record of the
+  // last forecast it drew, so a shell restart opens on a reading rather than
+  // on nothing. Bounded by construction in the same way the latch is — it only
+  // ever accepts the shape `parseWeather` produces, keyed to the place
+  // configured now, and anything else reads as no cache at all.
+  { id: "weatherCacheFile", file: "Service.qml" },
 ]
 
 function idsOf(pattern) {

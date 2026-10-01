@@ -7,6 +7,7 @@ import "lib/Basemap.js" as Basemap
 import "lib/RadarModel.js" as RadarModel
 import "lib/Settings.js" as Settings
 import "lib/TileCache.js" as TileCache
+import "lib/Weather.js" as Weather
 
 // Headless singleton behind the radar plugin.
 //
@@ -14,7 +15,7 @@ import "lib/TileCache.js" as TileCache
 // live here instead: the shell mounts exactly one service per plugin, which
 // keeps a two-monitor setup from doubling every request.
 //
-// Three responsibilities:
+// Four responsibilities:
 //
 //   1. Own the RainViewer frame manifest, so that a two-monitor setup showing
 //      the map on both shares one copy instead of fetching one each. It is 818
@@ -27,6 +28,12 @@ import "lib/TileCache.js" as TileCache
 //      rather than on every pass through the loop.
 //
 //   3. Decide whether to warn about approaching weather, and say so once.
+//
+//   4. Own the Weather tab's point forecast, and keep the last good reading
+//      of it on disk. It is a fetch like the others, so it is one request per
+//      machine rather than one per monitor; and a reading held by a panel
+//      dies with that panel, while one held here is drawn again when the
+//      shell restarts.
 //
 // On (3), a note on why the alert reads a point forecast rather than the radar
 // image it draws. Distance alone does not mean approaching — a cell 80 km east
@@ -170,6 +177,10 @@ Item {
       notifiedLevel = 0
       storeLatch(0)
       discardReading()
+      // The same is true of a forecast: it is a reading about a place and a
+      // moment, and the previous city's would sit under the new city's name
+      // until the new one's lands.
+      discardWeather()
     } else {
       // Learning where we are is the other half of the stored latch, and it can
       // arrive after the file does.
@@ -177,6 +188,12 @@ Item {
     }
 
     if (hasLocation && alertsEnabled) checkNow()
+
+    // The weather tab's own question, asked from here rather than from the
+    // panel: a panel showing the tab has counted itself as a consumer, and
+    // without this a location that arrives or moves under it would leave the
+    // tab waiting out the half-hour cadence for a reading it could have now.
+    if (hasLocation && weatherConsumers > 0) Qt.callLater(refreshWeather)
   }
 
   // ---------------------------------------------------------------------------
@@ -1197,6 +1214,238 @@ Item {
     lastCheckTime = Date.now()
 
     evaluateAlert()
+  }
+
+  // ---------------------------------------------------------------------------
+  // Weather tab
+  // ---------------------------------------------------------------------------
+
+  // The point forecast behind the Weather tab: one location asked of
+  // Open-Meteo, parsed into everything ui/WeatherView.qml draws. It lives here
+  // for the two reasons everything else in this file lives here — a bar widget
+  // is built once per monitor, so a fetch in the panel is a fetch made twice —
+  // and because a reading held by a panel dies with it, while this one is
+  // still here when the panel is rebuilt, and is on disk when the shell
+  // restarts.
+  //
+  // Fetching is gated on `weatherConsumers`, the number of open panels showing
+  // the tab, so an installation that never opens it never asks — and one that
+  // closed it stops asking — which is what makes the cadence below affordable
+  // to run unattended.
+  property var weather: null
+  property bool weatherFailed: false
+  property bool weatherChecking: false
+
+  // When a response last came back at all, carrying anything usable or not —
+  // the two are different questions, and without them apart "has not run yet"
+  // and "ran and could not tell you anything" look identical from outside.
+  // The cache stamps its record with the same figure, so a reading adopted
+  // from disk still says when it was taken.
+  property real weatherAnswerTime: 0
+
+  // What the request in flight was asked about: where, under what name. See
+  // applyWeatherResponse below for what it is compared against, and
+  // `requestedFor` in the forecast section above for why nothing else closes
+  // that gap — a response is only an answer to the question that was asked.
+  property string weatherRequestedFor: ""
+  property int weatherConsumers: 0
+
+  // Identity of the configured place — the same string latchPlaceKey is built
+  // from, for the same reason: a name or a coordinate moving makes a reading
+  // a reading about somewhere else.
+  function weatherKey() {
+    return hasLocation ? location.latitude + "," + location.longitude + "|" + locationName : ""
+  }
+
+  // Everything the last reading said, dropped together. See discardReading:
+  // keeping any one of it would leave a forecast of one city on screen under
+  // the name of another.
+  //
+  // `weatherRequestedFor` is deliberately not among them. It is not a reading,
+  // it is what the request already in flight was asked about — and
+  // applyWeatherResponse needs it to recognise that response as an answer
+  // about somewhere else. Clearing it here would open the exact hole the
+  // stale-question guard exists to close: a city changed while curl is out
+  // would let the previous city's answer through, drawn under the new city's
+  // name and written to the cache under its key. The next refresh overwrites
+  // it anyway.
+  function discardWeather() {
+    weather = null
+    weatherFailed = false
+    weatherAnswerTime = 0
+  }
+
+  // Asked when the tab is opened, when the location moves under it, and by
+  // the cadence timer while at least one panel shows it.
+  function refreshWeather() {
+    if (!hasLocation || weatherChecking) return
+
+    // Read the coordinates once and confirm they are numbers before building a
+    // request out of them, for the reason checkNow gives: parseFloat, not
+    // Number, because an unset location carries null, Number(null) is 0, and a
+    // request built from that would quietly report the weather at 0°N 0°E.
+    var lat = parseFloat(location.latitude)
+    var lon = parseFloat(location.longitude)
+    if (!isFinite(lat) || !isFinite(lon)) return
+
+    weatherChecking = true
+    weatherRequestedFor = weatherKey()
+
+    var command = Weather.weatherCommand(lat, lon)
+    // Unreachable given the check above — weatherUrl answers "" only for a
+    // coordinate that would not parse — but a guard that returned without
+    // clearing `weatherChecking` would block every later fetch for the
+    // session.
+    if (command.length === 0) {
+      weatherChecking = false
+      return
+    }
+
+    weatherProc.answered = false
+    weatherProc.command = command
+    weatherProc.running = true
+  }
+
+  Process {
+    id: weatherProc
+
+    // See manifestProc. `weatherChecking` is cleared only from here, so a fork
+    // that never happened would leave it set and every later fetch would
+    // return at the door — the tab silently showing nothing for the rest of
+    // the session.
+    property bool answered: false
+
+    onExited: function(exitCode) {
+      answered = true
+      root.applyWeatherResponse(exitCode, weatherOut.text)
+    }
+    onRunningChanged: if (!running && !answered) root.applyWeatherResponse(-1, "")
+
+    // The collector holds the output and decides nothing: `onStreamFinished`
+    // runs before the exit code exists, so a transfer cut short by the time or
+    // size ceiling would be read as one that completed.
+    stdout: StdioCollector { id: weatherOut; waitForEnd: true }
+  }
+
+  function applyWeatherResponse(exitCode, text) {
+    // Cleared first and unconditionally: whichever way this ends, the request
+    // it belongs to is over. See applyForecastResponse for why it is not
+    // cleared behind a guard on the exit code.
+    weatherChecking = false
+    weatherAnswerTime = Date.now()
+
+    // Answered a question nobody is asking any more. Applying it would put one
+    // place's weather on screen under another place's name, because the body
+    // describes the coordinates the request went out for and not wherever
+    // `location` points now. What the change earns instead is the request it
+    // never got to make: refreshWeather() refuses to overlap, so it was turned
+    // away at the door while this one was out.
+    if (weatherRequestedFor !== "" && weatherRequestedFor !== weatherKey()) {
+      weatherRequestedFor = ""
+      refreshWeather()
+      return
+    }
+    weatherRequestedFor = ""
+
+    var parsed = exitCode === 0 ? Weather.parseWeather(text) : null
+    // A failure keeps whatever is already held: a reading a few hours old
+    // still describes the place better than no reading at all, so the tab says
+    // the fetch failed rather than emptying itself.
+    if (!parsed) {
+      weatherFailed = true
+      return
+    }
+    weather = parsed
+    weatherFailed = false
+    storeWeatherCache(parsed)
+  }
+
+  Timer {
+    id: weatherTimer
+    // Open-Meteo rebuilds its model every few hours, so asking more often only
+    // re-fetches the same forecast — and half an hour is short enough that the
+    // tab is rarely more than one model run behind.
+    interval: Weather.WEATHER_REFRESH_MS
+    repeat: true
+    running: root.hasLocation && root.weatherConsumers > 0
+    onTriggered: root.refreshWeather()
+  }
+
+  // The last good reading, on disk, so that a shell restart draws the tab at
+  // once instead of its own "Loading forecast…" while the first request goes
+  // out — and so that a reading exists at all when the network does not.
+  //
+  // It is this plugin's own record, in this plugin's own state directory,
+  // written by storeWeatherCache below, and read without a byte ceiling like
+  // the alert latch beside it: see test/streams.test.js for why that is
+  // bounded by construction rather than by a limit here.
+  readonly property string weatherCachePath: Weather.weatherCachePath(Quickshell.env("HOME"))
+
+  // Whether a failed write has already been said. Not "has been saved" — a
+  // successful save clears it, so that the next run of failures speaks once
+  // more rather than never.
+  property bool weatherCacheWarned: false
+
+  FileView {
+    id: weatherCacheFile
+    path: root.weatherCachePath
+    atomicWrites: true
+    printErrors: false
+    onLoaded: root.receiveWeatherCache(text())
+    onLoadFailed: root.receiveWeatherCache("")
+    onSaved: root.weatherCacheWarned = false
+    onSaveFailed: {
+      // Said once per run of failures rather than once per write: the cache
+      // is rewritten every half hour, and a full disk would otherwise print
+      // the same line all afternoon. The cost of silence is only that a
+      // restart starts from nothing.
+      if (!root.weatherCacheWarned) {
+        console.warn("weather-radar: cannot write " + root.weatherCachePath
+          + "; the last forecast is not kept across a shell restart")
+      }
+      root.weatherCacheWarned = true
+    }
+  }
+
+  // A record written here, for the place configured now, under this schema
+  // version, and nothing else. Hand-edited, truncated by a crash, left behind
+  // by another version of the plugin, or carrying a schema number this build
+  // does not know — each reads as no cache at all, which is the state a fresh
+  // shell starts in anyway, rather than as data to draw. A reading already in
+  // hand wins over the one on disk: the cache is where a session begins, and
+  // overwriting a live answer with an older file would be going backwards.
+  function receiveWeatherCache(text) {
+    var record = null
+    try {
+      record = JSON.parse(String(text || ""))
+    } catch (e) {
+      record = null
+    }
+
+    if (record && typeof record === "object" && record.schema === 1
+        && record.key === weatherKey()
+        && record.data && typeof record.data === "object") {
+      if (root.weather === null) root.weather = record.data
+      root.weatherAnswerTime = Number(record.at) || root.weatherAnswerTime
+    }
+
+    // This is the last thing a restarted service reads, and a panel that
+    // counted itself as a consumer while it was loading would otherwise wait
+    // out the whole cadence for a reading that is already in hand.
+    if (weatherConsumers > 0) Qt.callLater(refreshWeather)
+  }
+
+  // Written only on a good answer, so the file is always the last thing that
+  // was actually drawn rather than the last thing attempted. The schema number
+  // is what lets a later shape refuse this record instead of drawing it.
+  function storeWeatherCache(parsed) {
+    if (weatherCachePath === "") return
+    weatherCacheFile.setText(JSON.stringify({
+      schema: 1,
+      key: weatherKey(),
+      at: Date.now(),
+      data: parsed
+    }) + "\n")
   }
 
   // ---------------------------------------------------------------------------

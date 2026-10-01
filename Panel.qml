@@ -11,7 +11,6 @@ import "lib/TileMath.js" as TileMath
 import "lib/RadarModel.js" as RadarModel
 import "lib/TileCache.js" as TileCache
 import "lib/Overlay.js" as Overlay
-import "lib/Weather.js" as Weather
 
 // The radar panel.
 //
@@ -544,6 +543,10 @@ Panel {
       root.radar.releaseManifest(root.tileOwner)
       root.manifestHeld = false
     }
+    // A panel closed with the weather tab up stops the cadence with it. The
+    // tab stays selected, so this is the only place that notices — reopening
+    // counts it again from onOpened.
+    root.dropWeatherConsumer()
     root.controller.hide()
     setCenterHoverRevealSuppressed(false)
   }
@@ -559,8 +562,13 @@ Panel {
   // still holds the manifest — unplugging a screen with the map open. Without
   // this the refcount never comes back down and the service keeps fetching
   // frames for a panel nobody has.
+  //
+  // The weather tab is counted the same way, for the same reason: the service's
+  // cadence timer runs on that count, and a panel destroyed while it holds a
+  // place in it would leave that place taken for the rest of the session.
   Component.onDestruction: {
     if (manifestHeld && root.radar && root.radar.releaseManifest) root.radar.releaseManifest(root.tileOwner)
+    root.dropWeatherConsumer()
   }
 
   function onOpened() {
@@ -591,9 +599,10 @@ Panel {
     // retries the tiles that failed while it was closed (see the service's
     // retryFailedTiles), and the layers have to notice.
     frameEpoch++
-    // The weather tab asks the same question the other two do of their own
-    // data: what is true now, wherever it was left.
-    if (root.weatherTab) Qt.callLater(root.refreshWeather)
+    // Opening registers the weather tab as a consumer for as long as this
+    // panel stays open — which is also the moment to ask for a current
+    // reading, so addWeatherConsumer does both.
+    if (root.weatherTab) root.addWeatherConsumer()
     // The canvas can only read pixels while it is on screen, so opening is
     // the moment to ask.
     Qt.callLater(function() { coverageProbe.probe() })
@@ -908,95 +917,51 @@ Panel {
   // Weather (Weather tab)
   // ---------------------------------------------------------------------------
   // A full forecast and the rainfall record for the configured location, from
-  // the same Open-Meteo service the overlays and the alerts already use. Unlike
-  // the alert forecast — five sample points, fetched only while the watch is on
-  // — this is one point, fetched only while the tab is open, and it carries the
-  // daily history the rain chart needs. The drawing is ui/WeatherView.qml.
-
-  property var weather: null
-  property real weatherAtMs: 0
-  property bool weatherFailed: false
-  property string weatherRequestKey: ""
+  // the same Open-Meteo service the overlays and the alerts already use.
+  // Unlike the alert forecast — five sample points, fetched only while the
+  // watch is on — this is one point, and it carries the daily history the rain
+  // chart needs. The service owns the fetch: one request per machine however
+  // many monitors have the tab up, a reading that survives this panel being
+  // rebuilt, and the last good one on disk for when the shell restarts. All
+  // that is left here is saying whether the tab is up, and counting the open
+  // panels showing it. The drawing is ui/WeatherView.qml.
 
   readonly property bool weatherTab: root.view === "weather"
-  readonly property string weatherKey: root.hasLocation
-    ? root.homeLatitude.toFixed(4) + "," + root.homeLongitude.toFixed(4)
-    : ""
+  readonly property var weather: root.radar ? root.radar.weather : null
+  readonly property bool weatherFailed: root.radar ? root.radar.weatherFailed === true : false
+  readonly property bool weatherLoading: root.radar ? root.radar.weatherChecking === true : false
 
-  function refreshWeather() {
-    if (!root.weatherTab || !root.hasLocation || weatherProc.running) return
-    var command = Weather.weatherCommand(root.homeLatitude, root.homeLongitude)
-    if (!command || command.length === 0) return
-    root.weatherRequestKey = root.weatherKey
-    weatherProc.answered = false
-    weatherProc.command = command
-    weatherProc.running = true
+  // Refcounted rather than left to the tab's visibility, the way the frame
+  // list is: two monitors can show the weather tab, and neither may decide
+  // alone whether fetching should stop. The count belongs to the service —
+  // its cadence timer runs on it — because it has to outlive this panel.
+  //
+  // What is counted is the tab being up in a panel that is itself open, not
+  // the tab being selected: a closed panel has nothing to show, and a count
+  // that survived closing would leave the service polling for a forecast
+  // nobody can see for the rest of the session. `weatherCounted` is this
+  // panel's own half of that — whether it is currently holding a place in
+  // the count — so that add and drop are each other's inverse and neither
+  // can be applied twice.
+  property bool weatherCounted: false
+
+  function addWeatherConsumer() {
+    if (root.weatherCounted || !root.radar || !root.weatherTab) return
+    root.weatherCounted = true
+    root.radar.weatherConsumers = root.radar.weatherConsumers + 1
+    Qt.callLater(root.radar.refreshWeather)
   }
 
-  onWeatherTabChanged: if (root.weatherTab) Qt.callLater(root.refreshWeather)
-
-  onWeatherKeyChanged: {
-    if (!root.opened || !root.weatherTab) return
-    // A place that just moved has no forecast of its own until this one lands.
-    // Keeping the previous place's would be a reading for somewhere else under
-    // the new name; only clear it while there is a place to replace it with.
-    if (root.hasLocation) {
-      root.weather = null
-      root.weatherFailed = false
-    }
-    weatherDebounce.restart()
+  function dropWeatherConsumer() {
+    if (!root.weatherCounted || !root.radar) return
+    root.weatherCounted = false
+    root.radar.weatherConsumers = Math.max(0, root.radar.weatherConsumers - 1)
   }
 
-  Timer {
-    id: weatherDebounce
-    interval: 300
-    onTriggered: root.refreshWeather()
-  }
-
-  // Open-Meteo rebuilds its model every few hours; asking more often only
-  // re-fetches the same forecast.
-  Timer {
-    id: weatherRefresh
-    interval: 30 * 60 * 1000
-    repeat: true
-    running: root.opened && root.weatherTab
-    onTriggered: root.refreshWeather()
-  }
-
-  Process {
-    id: weatherProc
-
-    // See geocodeProc: a process that cannot start emits nothing, and without
-    // an answered flag the view would show "loading" for the session.
-    property bool answered: false
-
-    onExited: function(exitCode) {
-      answered = true
-      root.applyWeather(exitCode, weatherOut.text)
-    }
-    onRunningChanged: if (!running && !answered) root.applyWeather(-1, "")
-
-    stdout: StdioCollector { id: weatherOut; waitForEnd: true }
-  }
-
-  function applyWeather(exitCode, text) {
-    var key = root.weatherRequestKey
-    root.weatherRequestKey = ""
-
-    // A response only answers the question that was asked. If the location
-    // moved while curl was out this belongs to the old place: drop it and ask
-    // again for the new one.
-    if (key !== root.weatherKey) {
-      if (root.weatherTab && root.hasLocation) Qt.callLater(root.refreshWeather)
-      return
-    }
-    if (exitCode !== 0) { root.weatherFailed = true; return }
-
-    var parsed = Weather.parseWeather(text)
-    if (!parsed) { root.weatherFailed = true; return }
-    root.weather = parsed
-    root.weatherAtMs = Date.now()
-    root.weatherFailed = false
+  onWeatherTabChanged: {
+    if (!root.opened) return
+    if (root.weatherTab) root.addWeatherConsumer()
+    else root.dropWeatherConsumer()
   }
 
   // The radar tiles covering the view, at the zoom the radar is fetched at.
@@ -1212,7 +1177,11 @@ Panel {
             active: root.view === "weather"
             onClicked: {
               root.view = "weather"
-              root.refreshWeather()
+              // Re-clicking the tab already showing is asking again, and the
+              // change handler above does not run when the view is already
+              // "weather". Qt.callLater collapses the two into one request
+              // when the view does change.
+              if (root.radar) Qt.callLater(root.radar.refreshWeather)
             }
           }
 
@@ -1478,8 +1447,10 @@ Panel {
           weather: root.weather
           locationName: root.locationName
           // With no location there is nothing to fetch, so "Loading" would be a
-          // promise the tab cannot keep; it reads as no forecast instead.
-          loading: root.weather === null && !root.weatherFailed && root.hasLocation
+          // promise the tab cannot keep; it reads as no forecast instead. Once
+          // a reading is in hand — including one the service kept on disk —
+          // there is nothing to wait for either.
+          loading: root.weatherLoading && root.weather === null && root.hasLocation
           failed: root.weatherFailed
           foreground: root.bar ? root.bar.foreground : Color.foreground
           accent: Color.accent

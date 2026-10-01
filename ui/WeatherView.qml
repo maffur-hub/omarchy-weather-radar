@@ -3,13 +3,14 @@ import qs.Commons
 import qs.Ui
 import "../lib/Weather.js" as Weather
 
-// The Weather tab: what it is doing outside now, the rainfall record the
-// chart is drawn from, the next 48 hours and the seven-day outlook. One
-// request to Open-Meteo — the same service the overlays and the alert
-// forecast already use — in the units the rest of the plugin asks in:
-// degrees Celsius, millimetres, kilometres per hour.
+// The Weather tab: what it is doing outside now with the sun's hours and
+// today's UV beneath it, the rainfall record the chart is drawn from with
+// what is due next, the next 48 hours with the day boundaries marked, and
+// the seven-day outlook. One request to Open-Meteo — the same service the
+// overlays and the alert forecast already use — in the units the rest of the
+// plugin asks in: degrees Celsius, millimetres, kilometres per hour.
 //
-// The panel owns the fetch and hands over what it parsed; this draws that,
+// The service owns the fetch and hands over what it parsed; this draws that,
 // and says only what it has. Every read of `weather` goes through `hasData`,
 // a reading the service left out is omitted rather than printed as "null",
 // and an error is never laid over a forecast already on screen — that stale
@@ -43,6 +44,17 @@ Column {
   // One decimal, or nothing at all: the record is the point of the section,
   // and an invented 0.0 would be a measurement nobody made.
   function mmOf(value) { return reading(value) ? value.toFixed(1) + " mm" : "" }
+
+  // A daily sun event arrives as a whole ISO instant in the location's own
+  // zone — "2026-10-01T06:12". The date belongs to the row it was read from
+  // and the place to the name above it, so only the clock is wanted here, and
+  // anything that is not an instant at all reads as absent rather than being
+  // printed as a time.
+  function clockOf(stamp) {
+    var text = String(stamp || "")
+    var marker = text.indexOf("T")
+    return marker >= 0 ? text.substring(marker + 1) : ""
+  }
 
   function dayRange(day) {
     if (!day) return ""
@@ -103,6 +115,40 @@ Column {
   readonly property string nowDescription: {
     if (!current) return ""
     return current.description ? current.description : Weather.describeCode(current.weatherCode)
+  }
+
+  // The sun's own hours and today's UV, from the first forecast row. None of
+  // the three is a live reading — they are fixed for the day — which is why
+  // they are worth a line of their own rather than being folded into the
+  // conditions above, where they would read as measurements taken now. Each is
+  // left out when the service had none, so the line shortens rather than
+  // growing a gap where a time should be.
+  readonly property string sunLine: {
+    if (!today) return ""
+    var bits = []
+    var rise = clockOf(today.sunrise)
+    if (rise !== "") bits.push("Sunrise " + rise)
+    var set = clockOf(today.sunset)
+    if (set !== "") bits.push("Sunset " + set)
+    if (reading(today.uvMax)) bits.push("UV " + Math.round(today.uvMax))
+    return bits.join(" · ")
+  }
+
+  // The rain section's own sentence, over the chart: when the next shower is
+  // due, and how much of it the next half-day carries. It is a claim about
+  // the day ahead rather than about what has fallen, which is what the two
+  // figures beside it are for — so it is read only from the fields that
+  // carry it, and a record without them (an older cache, a hand-edited one)
+  // says nothing rather than claiming a dry afternoon.
+  readonly property string rainSummary: {
+    if (!rain || rain.nextStart === undefined) return ""
+    var text = rain.nextStart
+      ? "Rain from " + rain.nextStart.label
+        + (rain.nextStart.dayOffset ? " tomorrow" : "")
+      : "No rain expected in the next 24 hours"
+    if (rain.next12Mm > 0) text += " · " + mmOf(rain.next12Mm) + " in 12h"
+    else if (rain.next24Mm > 0) text += " · " + mmOf(rain.next24Mm) + " in 24h"
+    return text
   }
 
   // Header: the tab, then where this is for and when it was asked — or, with
@@ -211,6 +257,18 @@ Column {
         opacity: 0.7
         elide: Text.ElideRight
       }
+
+      Text {
+        textFormat: Text.PlainText
+        width: parent.width
+        text: root.sunLine
+        visible: text !== ""
+        color: root.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        opacity: 0.55
+        elide: Text.ElideRight
+      }
     }
   }
 
@@ -285,6 +343,18 @@ Column {
     }
   }
 
+  Text {
+    textFormat: Text.PlainText
+    width: parent.width
+    text: root.rainSummary
+    visible: text !== ""
+    color: root.foreground
+    font.family: Style.font.family
+    font.pixelSize: Style.font.caption
+    opacity: 0.7
+    elide: Text.ElideRight
+  }
+
   RainChart {
     visible: root.hasData && root.rain !== null
     width: parent.width
@@ -351,14 +421,22 @@ Column {
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(2)
 
+            // Midnight is where the strip crosses into a new day, and "00:00"
+            // does not say which day it is now — the weekday does, in the
+            // accent and bold so the boundary is legible at a glance rather
+            // than counted out in hours. The cell keeps its width either way,
+            // so nothing else in the row shifts under it.
             Text {
               textFormat: Text.PlainText
               width: parent.width
               horizontalAlignment: Text.AlignHCenter
-              text: modelData.label ? modelData.label + ":00" : ""
-              color: root.foreground
+              text: modelData.isMidnight
+                ? (modelData.weekday || "")
+                : (modelData.label ? modelData.label + ":00" : "")
+              color: modelData.isMidnight ? root.accent : root.foreground
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
+              font.bold: modelData.isMidnight === true
               opacity: 0.6
             }
 
