@@ -63,9 +63,13 @@ Item {
   property bool lightningOnLatestFrame: true
 
   // The satellite picture layer. Drawn under the radar, like a base map with
-  // clouds in it; a plain XYZ raster source (NASA GIBS) at the map's own zoom.
+  // clouds in it: a live geostationary full-disk layer where one reaches the
+  // view, otherwise a stack of polar true-colour sensors composited so each
+  // one's missing swaths fall through to the next. See SatelliteLayer.
   property bool satelliteEnabled: false
-  property var satelliteTileUrlFor: null
+  property var satelliteLayers: []             // [{ sensor, maxZoom, mask }]
+  property var satelliteTileUrlFor: null       // function(sensor, zoom, x, y)
+  property int satelliteRevision: 0
 
   // The wind and pressure analysis drawn over everything. `overlayPoints` is
   // the Open-Meteo grid and `overlayIsobars` the contours computed from it by
@@ -193,22 +197,32 @@ Item {
     }
 
     // ---- Satellite imagery ------------------------------------------------
-    // NASA MODIS true colour under the radar: the picture layer. Requested at
-    // the map's own zoom and refreshed by the panel as the tiles turn over, so
-    // it fades in under a map that is otherwise radar over a drawn ground.
-    TileLayer {
-      id: satellite
+    // The picture layer under the radar: one live geostationary full-disk
+    // layer where a disk reaches the view, otherwise a stack of polar
+    // true-colour sensors composited so each one's missing swaths fall through
+    // to the next. Which layers, and their order, live in lib/Overlay.js. The
+    // panel repoints them as the ten-minute frames turn over, so the layer
+    // fades in under a map that is otherwise radar over a drawn ground.
+    Repeater {
       anchors.fill: parent
-      visible: root.satelliteEnabled
-      centerLatitude: root.centerLatitude
-      centerLongitude: root.centerLongitude
-      zoom: root.zoom
-      tileUrlFor: root.satelliteEnabled ? root.satelliteTileUrlFor : null
-      revision: "satellite"
-      smooth: true
-      opacity: root.satelliteEnabled ? 1 : 0
-      Behavior on opacity {
-        NumberAnimation { duration: 380; easing.type: Easing.InOutQuad }
+      model: root.satelliteLayers
+      delegate: SatelliteLayer {
+        required property var modelData
+        anchors.fill: parent
+        visible: root.satelliteEnabled
+        centerLatitude: root.centerLatitude
+        centerLongitude: root.centerLongitude
+        zoom: root.zoom
+        sensor: modelData.sensor
+        sourceZoom: Math.min(root.zoom, modelData.maxZoom)
+        maskBlack: modelData.mask
+        satelliteTileUrlFor: root.satelliteEnabled ? root.satelliteTileUrlFor : null
+        revision: "satellite:" + root.satelliteRevision
+        smoothTiles: root.smoothTiles
+        opacity: root.satelliteEnabled ? 1 : 0
+        Behavior on opacity {
+          NumberAnimation { duration: 380; easing.type: Easing.InOutQuad }
+        }
       }
     }
 

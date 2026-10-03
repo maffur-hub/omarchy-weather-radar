@@ -197,6 +197,28 @@ the radar, it is best-effort community data with no guarantee, in the spirit of
 the **Not a life-safety tool** caveat above, and it appears wherever the network
 has coverage.
 
+### The satellite overlay
+
+The map can draw a **satellite overlay** under the radar, toggled from the
+OVERLAYS row in the panel and sourced from [NASA GIBS](https://nasa-gibs.github.io/gibs-api-docs/).
+Where a **geostationary imager** covers the view — GOES-East, GOES-West or
+Himawari-9 — it draws that imager's **live, gap-free full disk**: one picture of
+the same hemisphere, refreshed every ten minutes and typically about forty
+minutes behind real time. GOES carries **GeoColor**, true colour by day and
+multispectral infrared by night; Himawari has no true colour on GIBS, so it is
+shown as its **visible band by day and clean infrared band by night**.
+
+No disk reaches Europe, Africa or the Indian Ocean, so there the overlay falls
+back to **stacked polar true-colour sensors** — MODIS Terra and Aqua and VIIRS.
+A single polar orbiter's daily composite has **gaps**: the ground it did not see
+that day is painted opaque black, which reads as a black wedge across the map.
+
+Only the polar fallback runs its tiles through a shader that makes the
+near-black gaps **transparent**, so the gaps in the layer above fall through to
+the sensor beneath, and only ground no sensor saw shows the base map. The
+compiled shader is `shaders/blackmask.frag.qsb`, rebuilt from
+`shaders/blackmask.frag` with the `qsb` command in that file's header.
+
 ### The base map
 
 The coastlines, borders, lakes, rivers, city footprints and place names are
@@ -567,12 +589,13 @@ absolute half is what stays true for someone reading it later.
 
 - Radar imagery: [RainViewer](https://www.rainviewer.com) — best-effort, no SLA
 - Forecast and geocoding: [Open-Meteo](https://open-meteo.com)
+- Satellite imagery: [NASA GIBS](https://nasa-gibs.github.io/gibs-api-docs/) — GOES/Himawari geostationary (CIRA/NOAA GeoColor) and polar MODIS/VIIRS true colour
 - Base map: [Natural Earth](https://www.naturalearthdata.com/) 1:10m and 1:50m,
   public domain, shipped with the plugin as `data/basemap.bin`
 
 ## Roadmap
 
-- Satellite cloud layer (GOES / Himawari via NASA GIBS)
+- Geostationary coverage for Europe and Africa (Meteosat), which GIBS does not carry
 - A denser place-name set for the deepest zoom levels
 - Additional radar providers for regions with higher-resolution national
   networks, selectable per user

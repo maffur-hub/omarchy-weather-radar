@@ -147,7 +147,7 @@
         "type": "boolean",
         "label": "Satellite overlay",
         "defaultValue": false,
-        "description": "Show NASA MODIS satellite imagery as the map's picture layer, under the radar. Also toggleable from the panel."
+        "description": "Show satellite imagery as the map's picture layer, under the radar. Where a geostationary imager covers the view (GOES-East/West or Himawari-9) it shows that live, gap-free full-disk picture, refreshed every ten minutes; elsewhere it falls back to a composite of polar true-colour sensors. Also toggleable from the panel."
       }
     ]
   }

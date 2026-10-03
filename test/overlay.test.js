@@ -179,6 +179,62 @@ test("a satellite tile is a GIBS Web Mercator request at the map's zoom", () => 
   assert.strictEqual(Overlay.satelliteTileUrl(7, 128, 0), "")
 })
 
+test("every composite sensor is a GIBS Web Mercator request", () => {
+  assert.ok(Overlay.SATELLITE_SENSORS.length >= 2, "the composite needs more than one sensor")
+  for (const sensor of Overlay.SATELLITE_SENSORS) {
+    assert.match(sensor, /^[A-Za-z0-9_]+_CorrectedReflectance_TrueColor$/, sensor)
+    const url = Overlay.satelliteTileUrlFor(sensor, 7, 117, 77)
+    assert.strictEqual(url,
+      "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/" + sensor
+      + "/default/default/GoogleMapsCompatible_Level9/7/77/117.jpeg")
+  }
+  assert.strictEqual(Overlay.satelliteTileUrlFor("VIIRS_SNPP_CorrectedReflectance_TrueColor", 7, 128, 0), "")
+  assert.strictEqual(Overlay.satelliteTileUrlFor("not_a_sensor", 7, 0, 0), "")
+})
+
+test("the satellite picks the nearest geostationary disk, and day from night", () => {
+  // Australia: Himawari. Daytime is the visible band, night the clean infrared.
+  const auDay = Overlay.satelliteLayers(-25, 133, true)
+  assert.strictEqual(auDay.length, 1)
+  assert.strictEqual(auDay[0].sensor, "Himawari_AHI_Band3_Red_Visible_1km")
+  assert.strictEqual(auDay[0].mask, false)
+  assert.strictEqual(auDay[0].maxZoom, 7)
+  const auNight = Overlay.satelliteLayers(-25, 133, false)
+  assert.strictEqual(auNight[0].sensor, "Himawari_AHI_Band13_Clean_Infrared")
+  assert.strictEqual(auNight[0].maxZoom, 6)
+  // The Americas.
+  assert.strictEqual(Overlay.satelliteLayers(40, -74, true)[0].sensor, "GOES-East_ABI_GeoColor")
+  assert.strictEqual(Overlay.satelliteLayers(34, -118, true)[0].sensor, "GOES-West_ABI_GeoColor")
+  // Europe is out of reach of every disk and falls back to the polar stack.
+  const fallback = Overlay.satelliteLayers(51, 0, true)
+  assert.ok(fallback.length > 1, JSON.stringify(fallback))
+  assert.ok(fallback.every(l => l.mask === true), JSON.stringify(fallback))
+})
+
+test("the subsolar point tracks the hour and the season", () => {
+  const noon = Overlay.subsolarPoint(Date.UTC(2026, 9, 3, 12))
+  assert.ok(Math.abs(noon.longitude) < 5, "subsolar longitude " + noon.longitude)
+  const june = Overlay.subsolarPoint(Date.UTC(2026, 5, 21, 12))
+  assert.ok(june.latitude > 22 && june.latitude < 24.5, "june declination " + june.latitude)
+  const december = Overlay.subsolarPoint(Date.UTC(2026, 11, 21, 12))
+  assert.ok(december.latitude < -22 && december.latitude > -24.5, "december declination " + december.latitude)
+  assert.strictEqual(Overlay.isDaytime(-25, 133, Date.UTC(2026, 9, 3, 9)), true)
+  assert.strictEqual(Overlay.isDaytime(-25, 133, Date.UTC(2026, 9, 3, 19)), false)
+})
+
+test("live layers carry a frame cache-buster and polar layers do not", () => {
+  const live = Overlay.satelliteTileUrlFor("Himawari_AHI_Band3_Red_Visible_1km", 7, 117, 77, 12345)
+  assert.strictEqual(live,
+    "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Himawari_AHI_Band3_Red_Visible_1km/default/default/GoogleMapsCompatible_Level7/7/77/117.png?frame=12345")
+  const infrared = Overlay.satelliteTileUrlFor("Himawari_AHI_Band13_Clean_Infrared", 6, 55, 36, 9)
+  assert.strictEqual(infrared,
+    "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Himawari_AHI_Band13_Clean_Infrared/default/default/GoogleMapsCompatible_Level6/6/36/55.png?frame=9")
+  const polar = Overlay.satelliteTileUrlFor("MODIS_Terra_CorrectedReflectance_TrueColor", 7, 117, 77, 12345)
+  assert.strictEqual(polar,
+    "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/default/GoogleMapsCompatible_Level9/7/77/117.jpeg")
+  assert.strictEqual(Overlay.satelliteTileUrlFor("not_a_sensor", 7, 0, 0, 1), "")
+})
+
 // ------------------------------------------------------------------ aurora
 
 test("OVATION parses into bounded southern cells", () => {

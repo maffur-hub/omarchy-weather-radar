@@ -636,7 +636,7 @@ Panel {
 
   // Credit for everything drawn on the map, in one place so it cannot fall out
   // of step with where the data actually comes from.
-  readonly property string attribution: "RainViewer · LightningMaps · NASA GIBS · Open-Meteo · NOAA SWPC · Natural Earth"
+  readonly property string attribution: "RainViewer · LightningMaps · NASA GIBS · CIRA/NOAA · Open-Meteo · NOAA SWPC · Natural Earth"
 
   function radarTileUrlA(z, x, y) { return root.showRain ? root.radarTileUrlForTime(root.frameA, z, x, y) : "" }
   function radarTileUrlB(z, x, y) { return root.showRain ? root.radarTileUrlForTime(root.frameB, z, x, y) : "" }
@@ -693,8 +693,46 @@ Panel {
     return RadarModel.lightningTileUrl(z, x, y, span.from, span.to)
   }
 
-  // One satellite tile, at the map's own zoom.
-  function satelliteTileUrlFor(z, x, y) { return Overlay.satelliteTileUrl(z, x, y) }
+  // The satellite overlay: a live geostationary layer when one covers the
+  // view, the polar composite otherwise. Which sensor, and which Himawari band
+  // day or night, depends on where the map is looking and whether the Sun is
+  // up there. The view moves continuously while someone drags the map, so the
+  // choice is deliberately not a binding on it: it is recomputed on the same
+  // minute timer that repoints the frames, and the layer stack is rebuilt only
+  // when the chosen layer actually changes. Ten minutes of geostationary lag
+  // is smaller than the delay before a switch could matter.
+  property int satelliteEpoch: 0
+  property string satelliteSelection: ""
+  property var satelliteLayers: []
+
+  function refreshSatellite() {
+    root.satelliteEpoch++
+    var daytime = Overlay.isDaytime(root.viewLatitude, root.viewLongitude, Date.now())
+    var layers = Overlay.satelliteLayers(root.viewLatitude, root.viewLongitude, daytime)
+    var selection = layers.map(function(layer) { return layer.sensor }).join(",")
+    if (selection === root.satelliteSelection) return
+    root.satelliteSelection = selection
+    root.satelliteLayers = layers
+  }
+
+  // The frame cache-buster: the URL changes when the ten-minute bucket does,
+  // which is how an open map fetches the next geostationary frame rather than
+  // a cached one. Polar layers ignore it.
+  function satelliteTileUrlFor(sensor, z, x, y) {
+    return Overlay.satelliteTileUrlFor(sensor, z, x, y, Math.floor(Date.now() / 600000))
+  }
+
+  // The geostationary frame and the terminator both turn slowly; a minute is
+  // fine for catching them, and the URL only changes when the bucket does, so
+  // an idle refresh costs nothing. triggeredOnStart catches the moment the
+  // overlay is switched on or the panel opens.
+  Timer {
+    interval: 60000
+    repeat: true
+    triggeredOnStart: true
+    running: root.opened && root.showSatellite
+    onTriggered: root.refreshSatellite()
+  }
 
   // Bumped on a timer while the map is open with the overlay on, so the archive
   // layer asks again where its tiles are to be loaded from. The URL only
@@ -1348,7 +1386,9 @@ Panel {
           lightningLive: root.lightningLive
 
           satelliteEnabled: root.showSatellite
+          satelliteLayers: root.satelliteLayers
           satelliteTileUrlFor: root.satelliteTileUrlFor
+          satelliteRevision: root.satelliteEpoch
 
           windEnabled: root.showWind
           synopticEnabled: root.showSynoptic
