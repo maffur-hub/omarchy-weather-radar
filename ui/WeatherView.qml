@@ -592,112 +592,124 @@ Column {
     Repeater {
       model: root.days
 
-      delegate: Column {
+      // One day's cell: the row of readings, and — when opened — the summary
+      // beneath it, under one click target the size of both. An Item rather
+      // than a Column holds them, so the MouseArea can fill the cell without
+      // taking part in a Row's or Column's layout: an anchored child of a
+      // positioning item is laid out by position as well, which is what put
+      // every forecast label on top of the next.
+      delegate: Item {
         id: dayCell
         width: parent.width
-        spacing: 0
+        height: content.implicitHeight
 
         readonly property bool expanded: root.expandedDay === index
 
-        Row {
-          id: dayRow
+        Column {
+          id: content
           width: parent.width
-          height: Style.space(22)
-          spacing: Style.space(6)
-          opacity: modelData.isToday ? 1 : (dayCell.expanded ? 1 : 0.75)
+          spacing: 0
 
-          readonly property real fixedWidth: Style.space(54) + Style.space(20)
-            + Style.space(34) + Style.space(50) + Style.space(54) + spacing * 5
+          Row {
+            id: dayRow
+            width: parent.width
+            height: Style.space(22)
+            spacing: Style.space(6)
+            opacity: modelData.isToday ? 1 : (dayCell.expanded ? 1 : 0.75)
 
-          Text {
-            textFormat: Text.PlainText
-            width: Style.space(54)
-            anchors.verticalCenter: parent.verticalCenter
-            text: modelData.label
-            color: root.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.bodySmall
-            font.bold: modelData.isToday
+            readonly property real fixedWidth: Style.space(54) + Style.space(20)
+              + Style.space(34) + Style.space(50) + Style.space(54) + spacing * 5
+
+            Text {
+              textFormat: Text.PlainText
+              width: Style.space(54)
+              anchors.verticalCenter: parent.verticalCenter
+              text: modelData.label
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              font.bold: modelData.isToday
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: Style.space(20)
+              anchors.verticalCenter: parent.verticalCenter
+              horizontalAlignment: Text.AlignHCenter
+              text: Weather.iconForCode(modelData.weatherCode, false)
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.iconLarge
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: Math.max(Style.space(40), dayRow.width - dayRow.fixedWidth)
+              anchors.verticalCenter: parent.verticalCenter
+              elide: Text.ElideRight
+              text: (dayCell.expanded ? "▾ " : "▸ ")
+                + (modelData.description ? modelData.description : Weather.describeCode(modelData.weatherCode))
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: Style.space(34)
+              anchors.verticalCenter: parent.verticalCenter
+              horizontalAlignment: Text.AlignRight
+              text: (root.reading(modelData.precipitationProbability)
+                && modelData.precipitationProbability > 0)
+                ? Math.round(modelData.precipitationProbability) + "%" : ""
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              opacity: 0.7
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: Style.space(50)
+              anchors.verticalCenter: parent.verticalCenter
+              horizontalAlignment: Text.AlignRight
+              text: root.mmOf(modelData.precipitationSum)
+              color: root.accent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: Style.space(54)
+              anchors.verticalCenter: parent.verticalCenter
+              horizontalAlignment: Text.AlignRight
+              text: root.dayRange(modelData)
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
           }
 
           Text {
             textFormat: Text.PlainText
-            width: Style.space(20)
-            anchors.verticalCenter: parent.verticalCenter
-            horizontalAlignment: Text.AlignHCenter
-            text: Weather.iconForCode(modelData.weatherCode, false)
+            visible: dayCell.expanded
+            width: parent.width
+            text: root.daySummary(modelData)
             color: root.foreground
             font.family: Style.font.family
-            font.pixelSize: Style.font.iconLarge
-          }
-
-          Text {
-            textFormat: Text.PlainText
-            width: Math.max(Style.space(40), dayRow.width - dayRow.fixedWidth)
-            anchors.verticalCenter: parent.verticalCenter
+            font.pixelSize: Style.font.caption
+            opacity: 0.65
             elide: Text.ElideRight
-            text: (dayCell.expanded ? "▾ " : "▸ ")
-              + (modelData.description ? modelData.description : Weather.describeCode(modelData.weatherCode))
-            color: root.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.bodySmall
-          }
-
-          Text {
-            textFormat: Text.PlainText
-            width: Style.space(34)
-            anchors.verticalCenter: parent.verticalCenter
-            horizontalAlignment: Text.AlignRight
-            text: (root.reading(modelData.precipitationProbability)
-              && modelData.precipitationProbability > 0)
-              ? Math.round(modelData.precipitationProbability) + "%" : ""
-            color: root.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.bodySmall
-            opacity: 0.7
-          }
-
-          Text {
-            textFormat: Text.PlainText
-            width: Style.space(50)
-            anchors.verticalCenter: parent.verticalCenter
-            horizontalAlignment: Text.AlignRight
-            text: root.mmOf(modelData.precipitationSum)
-            color: root.accent
-            font.family: Style.font.family
-            font.pixelSize: Style.font.bodySmall
-          }
-
-          Text {
-            textFormat: Text.PlainText
-            width: Style.space(54)
-            anchors.verticalCenter: parent.verticalCenter
-            horizontalAlignment: Text.AlignRight
-            text: root.dayRange(modelData)
-            color: root.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.bodySmall
-          }
-
-          MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.expandedDay = dayCell.expanded ? -1 : index
+            topPadding: Style.space(2)
+            bottomPadding: Style.space(2)
           }
         }
 
-        Text {
-          textFormat: Text.PlainText
-          visible: dayCell.expanded
-          width: parent.width
-          text: root.daySummary(modelData)
-          color: root.foreground
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-          opacity: 0.65
-          elide: Text.ElideRight
-          topPadding: Style.space(2)
-          bottomPadding: Style.space(2)
+        MouseArea {
+          anchors.fill: parent
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.expandedDay = dayCell.expanded ? -1 : index
         }
       }
     }
