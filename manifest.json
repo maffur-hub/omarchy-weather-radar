@@ -119,7 +119,7 @@
         "type": "boolean",
         "label": "Lightning overlay",
         "defaultValue": false,
-        "description": "Draw live lightning strikes over the radar, from the community LightningMaps/Blitzortung detection network. Also toggleable from the panel."
+        "description": "Draw lightning strikes over the radar, from the community LightningMaps/Blitzortung detection network. Zoomed in, the live layer streams true strikes from LightningMaps' WebSocket and draws them as age-coloured dots; zoomed out, and whenever that feed cannot run, the two-hour archive tile layer is shown instead. Also toggleable from the panel."
       },
       {
         "key": "showRain",

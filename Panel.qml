@@ -11,6 +11,7 @@ import "lib/TileMath.js" as TileMath
 import "lib/RadarModel.js" as RadarModel
 import "lib/TileCache.js" as TileCache
 import "lib/Overlay.js" as Overlay
+import "lib/Strikes.js" as Strikes
 
 // The radar panel.
 //
@@ -640,18 +641,12 @@ Panel {
   function radarTileUrlA(z, x, y) { return root.showRain ? root.radarTileUrlForTime(root.frameA, z, x, y) : "" }
   function radarTileUrlB(z, x, y) { return root.showRain ? root.radarTileUrlForTime(root.frameB, z, x, y) : "" }
 
-  // The legend for the active layer: the real-time hour in ten-minute bands
-  // (the amber the live tiles draw), or the two-hour archive in twenty-minute
-  // bands (its yellow-through-blue). Newest on the left.
+  // The legend for the active layer: the live dots' ten-minute hour, or the
+  // two-hour archive in twenty-minute bands (its yellow-through-blue). Newest
+  // on the left. The live bands come from Strikes.js so the key is the same
+  // palette ui/StrikeLayer.qml draws with.
   readonly property var lightningLegend: root.lightningLive
-    ? [
-        { colour: "#fab40a", age: "0–10" },
-        { colour: "#f0960a", age: "10–20" },
-        { colour: "#e6780a", age: "20–30" },
-        { colour: "#dc6e0a", age: "30–40" },
-        { colour: "#d25a0a", age: "40–50" },
-        { colour: "#c8460a", age: "50–60" }
-      ]
+    ? Strikes.LIVE_BANDS
     : [
         { colour: "#ffff00", age: "0–20" },
         { colour: "#f5aa0a", age: "20–40" },
@@ -661,27 +656,39 @@ Panel {
         { colour: "#412ee6", age: "100–120" }
       ]
 
-  // Which lightning layer the map is showing. Close in, the real-time layer:
-  // the last hour as it happens. Further out, where the whole state is on
-  // screen, the archive is worth more than the last few minutes — it carries
-  // two hours, at the cost of the newest strokes, which the source withholds
-  // until they are a few minutes old.
-  readonly property bool lightningLive: RadarModel.lightningLiveAt(root.zoom)
+  // The helper that streams true live strikes from LightningMaps' WebSocket.
+  // Resolved from this file rather than assembled from a home directory, so it
+  // works wherever the plugin is installed. The rest of the plugin needs only
+  // curl and the shell; the live layer alone needs Node 22+.
+  readonly property string liveStrikesPath:
+    Qt.resolvedUrl("tools/live-strikes.mjs").toString().replace("file://", "")
 
-  // The two hours the lightning overlay covers, ending on the two-minute
-  // cache bucket so every tile in one refresh shares a window and the server's
-  // image for it. Rebuilt when the panel refreshes the layer — it reads
-  // `lightningEpoch` for that — rather than once per tile.
+  // Which lightning layer the map is showing. Close in, the live feed: the last
+  // hour of strikes as they happen, but only once the stream has actually said
+  // it is connected. With no Node, or before the first ready line, this is
+  // false at every zoom and the archive covers the map instead.
+  readonly property bool lightningLive: RadarModel.lightningLiveAt(root.zoom) && root.strikesLive
+
+  // The live strikes the panel holds, and a bump counter, because the feed
+  // mutates the array in place rather than replacing it.
+  property var lightningStrikes: []
+  property int lightningStrikesRevision: 0
+  property bool strikesLive: false
+
+  // The two hours the archive covers, ending on the two-minute cache bucket so
+  // every tile in one refresh shares a window and the server's image for it.
+  // Rebuilt when the panel refreshes the layer — it reads `lightningEpoch` for
+  // that — rather than once per tile.
   readonly property var lightningWindow: {
     var epoch = root.lightningEpoch
     return RadarModel.lightningWindow(Date.now())
   }
 
+  // The archive tile. While the live dots are showing this returns "", drawing
+  // nothing and fetching nothing; otherwise it is the archive at every zoom,
+  // which is also the fallback when the stream cannot run.
   function lightningTileUrlFor(z, x, y) {
-    if (root.lightningLive) {
-      var bucket = Math.floor(Date.now() / 1000 / RadarModel.LIGHTNING_TILE_BUCKET_SEC)
-      return RadarModel.lightningLiveTileUrl(z, x, y, bucket)
-    }
+    if (root.lightningLive) return ""
     var span = root.lightningWindow
     return RadarModel.lightningTileUrl(z, x, y, span.from, span.to)
   }
@@ -689,10 +696,10 @@ Panel {
   // One satellite tile, at the map's own zoom.
   function satelliteTileUrlFor(z, x, y) { return Overlay.satelliteTileUrl(z, x, y) }
 
-  // Bumped on a timer while the map is open with the overlay on, so the
-  // lightning layer asks again where its tiles are to be loaded from. The URL
-  // only changes when the two-minute bucket turns over, so an idle refresh
-  // costs nothing — Qt answers unchanged URLs from its own cache.
+  // Bumped on a timer while the map is open with the overlay on, so the archive
+  // layer asks again where its tiles are to be loaded from. The URL only
+  // changes when the two-minute bucket turns over, so an idle refresh costs
+  // nothing — Qt answers unchanged URLs from its own cache.
   property int lightningEpoch: 0
   Timer {
     id: lightningRefresh
@@ -700,6 +707,98 @@ Panel {
     repeat: true
     running: root.opened && root.showLightning
     onTriggered: root.lightningEpoch++
+  }
+
+  // ---------------------------------------------------------------------------
+  // Live lightning feed
+  // ---------------------------------------------------------------------------
+  //
+  // True live strikes, not a tile: the WebSocket stream the old server layer
+  // was standing in for. It runs only while it can be seen — the radar tab is
+  // open, the overlay is on, and the map is zoomed in far enough that the live
+  // layer is the one on screen. Everything else falls back to the archive
+  // tiles, which need no process at all.
+
+  readonly property bool needStrikes:
+    root.showLightning && root.view === "radar" && root.opened && RadarModel.lightningLiveAt(root.zoom)
+
+  // A box around the configured location rather than the viewport: panning near
+  // home must not restart the connection, and the whole point of the live layer
+  // is what is happening around here.
+  readonly property var strikeBounds: root.needStrikes ? Strikes.boundsFor(root.homeLatitude, root.homeLongitude) : null
+  readonly property string strikeKey: root.needStrikes && root.strikeBounds ? root.strikeBounds.join(",") : ""
+  onStrikeKeyChanged: strikeTimer.restart()
+
+  // Debounced like the wind grid: opening the tab or zooming across the
+  // threshold should settle before a process is rebuilt, not thrash one start
+  // per keypress.
+  Timer {
+    id: strikeTimer
+    interval: 300
+    onTriggered: root.syncStrikes()
+  }
+
+  function syncStrikes() {
+    if (!root.needStrikes || !root.strikeBounds) {
+      strikeProc.pending = ""
+      strikeProc.running = false
+      root.strikesLive = false
+      return
+    }
+    var cmd = Strikes.command(root.liveStrikesPath, root.strikeBounds)
+    if (cmd.length === 0) return
+    // A running process is replaced rather than left to run beside its
+    // successor: stop it and let `onRunningChanged` start the new command, so
+    // only one socket is ever open.
+    if (strikeProc.running) { strikeProc.pending = cmd; strikeProc.running = false }
+    else { strikeProc.command = cmd; strikeProc.running = true }
+  }
+
+  function onStrikeLine(line) {
+    if (Strikes.isReady(line)) { root.strikesLive = true; return }
+    var strike = Strikes.parseLine(line)
+    if (!strike) return
+    if (Strikes.add(root.lightningStrikes, strike)) {
+      // Keep the ceiling tight on the way in rather than relying on the prune
+      // timer: a fast storm can add more than the cap between one tick and the
+      // next.
+      Strikes.prune(root.lightningStrikes, Date.now())
+      root.lightningStrikesRevision++
+    }
+  }
+
+  Process {
+    id: strikeProc
+
+    // Long-lived stream, not a fetch: SplitParser hands over one bounded line
+    // at a time, and Strikes.js caps what is retained. `pending` holds the next
+    // command while a running process is being replaced (the bounds change when
+    // the city or the tab changes), so the replacement starts on the same
+    // handler.
+    property string pending: ""
+
+    stdout: SplitParser { onRead: function(line) { root.onStrikeLine(line) } }
+
+    onRunningChanged: {
+      if (running) return
+      root.strikesLive = false
+      if (strikeProc.pending !== "") {
+        var cmd = strikeProc.pending
+        strikeProc.pending = ""
+        strikeProc.command = cmd
+        strikeProc.running = true
+      }
+    }
+  }
+
+  // The buffer ages out on its own too, so a lull in strikes still clears the
+  // dots from the hour they no longer belong to.
+  Timer {
+    id: strikePruneTimer
+    interval: 60000
+    repeat: true
+    running: root.lightningStrikes.length > 0
+    onTriggered: if (Strikes.prune(root.lightningStrikes, Date.now())) root.lightningStrikesRevision++
   }
 
   // ---------------------------------------------------------------------------
@@ -1244,6 +1343,9 @@ Panel {
           lightningTileUrlFor: root.lightningTileUrlFor
           lightningEpoch: root.lightningEpoch
           lightningOnLatestFrame: root.isLatestFrame
+          lightningStrikes: root.lightningStrikes
+          lightningStrikesRevision: root.lightningStrikesRevision
+          lightningLive: root.lightningLive
 
           satelliteEnabled: root.showSatellite
           satelliteTileUrlFor: root.satelliteTileUrlFor

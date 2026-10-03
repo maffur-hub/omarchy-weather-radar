@@ -81,7 +81,10 @@ rm -f ~/.local/state/omarchy/weather-radar-weather.json
 Omarchy Quattro, and `curl`, which Omarchy already installs. The base map needs
 nothing at all — it ships with the plugin. The plugin calls
 `omarchy-weather-location` to store a chosen city and `omarchy-notification-send`
-to raise an alert — both ship with Omarchy. Nothing else is installed, and no
+to raise an alert — both ship with Omarchy. The **live lightning layer** also
+uses `node` (Node 22 or newer, for its built-in WebSocket); nothing is bundled
+with it and the rest of the plugin still needs only `curl`. Without `node` the
+overlay falls back to the archive tiles. Nothing else is installed, and no
 configuration outside the widget's own entry is written. Besides that entry it
 writes only the radar tile cache, the alert record and the cached forecast
 named above.
@@ -165,20 +168,29 @@ The map can draw a **lightning overlay** beside the radar, toggled from the
 OVERLAYS row in the panel and sourced from the LightningMaps/Blitzortung
 community detection network. It draws **two layers, chosen by the map zoom**.
 
-Zoomed in — map zoom **6 or closer** — it draws the **real-time** layer: the
-**last hour** of strokes, refreshed live. That is the sharpest view, and it is
-drawn only while the loop rests on the newest frame; scrubbing or playing into
-the past fades it out, since those strikes did not happen at that past moment,
-and it returns already loaded when the loop comes back to the newest frame.
+Zoomed in — map zoom **6 or closer** — it draws **true live strikes**, streamed
+from LightningMaps' own WebSocket (`wss://live2.lightningmaps.org`). One
+connection is opened, and the subscription is bounded to a box around your
+configured location. Each strike is drawn as a dot coloured by its **age** — the
+newest amber, darkening towards red across the last hour. It is drawn only while
+the loop rests on the newest frame; scrubbing or playing into the past fades it
+out, since those strikes did not happen at that past moment, and it returns
+already loaded when the loop comes back to the newest frame.
 
 Zoomed out — below zoom 6 — it draws the **two-hour archive** instead: more
 reach for an overview, at the cost of the newest few minutes, which the source
 withholds from the archive.
 
-The panel's colour key switches with the layer and now labels the **age in
-minutes on each swatch**: the real-time layer in ten-minute bands, amber through
+The live layer needs **Node 22 or newer**, for the built-in WebSocket the helper
+in `tools/` runs on. Without Node, or before the feed has connected, the plugin
+falls back to the archive tiles at every zoom — so the overlay still works, it
+just shows the archive rather than the newest strikes.
+
+The panel's colour key switches with the layer and labels the **age in
+minutes on each swatch**: the live layer in ten-minute bands, amber through
 to dark red, and the archive in twenty-minute bands, yellow through orange and
-red to violet and blue.
+red to violet and blue. Both palettes are defined in one place in the plugin, so
+the key and the dots cannot drift apart.
 
 While the map is open it refreshes on its own every couple of minutes. As with
 the radar, it is best-effort community data with no guarantee, in the spirit of

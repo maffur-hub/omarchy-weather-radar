@@ -65,14 +65,6 @@ test("a lightning tile asks for a two-hour window on the fixed host", () => {
     + "&from=2026-10-03T05:00:00.000Z&to=2026-10-03T07:00:00.000Z")
 })
 
-test("a live lightning tile asks the t=5 layer with the cache bucket", () => {
-  assert.strictEqual(RadarModel.lightningLiveTileUrl(7, 117, 77, 14915680),
-    "https://tiles.lightningmaps.org/?x=117&y=77&z=7&s=256&t=5&T=14915680")
-  // An unparseable bucket still asks the current one, bucket 0.
-  assert.strictEqual(RadarModel.lightningLiveTileUrl(7, 0, 0, "x"),
-    "https://tiles.lightningmaps.org/?x=0&y=0&z=7&s=256&t=5&T=0")
-})
-
 test("a lightning window is two hours ending on the cache bucket", () => {
   const now = 1780000000000
   const window = RadarModel.lightningWindow(now)
@@ -88,9 +80,6 @@ test("a lightning tile outside the grid is not a request", () => {
   assert.strictEqual(RadarModel.lightningTileUrl(7, 1.5, 0, 0, 1), "")
   // An unparseable instant is not a window to ask for.
   assert.strictEqual(RadarModel.lightningTileUrl(7, 0, 0, "x", 1), "")
-  // (live builder)
-  assert.strictEqual(RadarModel.lightningLiveTileUrl(-1, 0, 0, 1), "")
-  assert.strictEqual(RadarModel.lightningLiveTileUrl(7, 128, 0, 1), "")
 })
 
 test("the real-time lightning layer is used only when zoomed in", () => {

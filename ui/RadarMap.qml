@@ -36,14 +36,24 @@ Item {
   property var radarTileUrlA: null
   property var radarTileUrlB: null
 
-  // The lightning overlay. The same shape as the radar layers, but a separate
-  // raster source (the LightningMaps tile server) that refreshes in place
-  // rather than stepping frame to frame, so it is a single layer whose tiles
-  // are repointed as the bucket turns over. `lightningTileUrlFor` returning ""
-  // — when the overlay is off — draws nothing and fetches nothing.
+  // The lightning overlay. The archive is the same shape as the radar layers,
+  // but a separate raster source (the LightningMaps tile server) that refreshes
+  // in place rather than stepping frame to frame, so it is a single layer whose
+  // tiles are repointed as the bucket turns over. `lightningTileUrlFor`
+  // returning "" draws nothing and fetches nothing, which is the case when the
+  // overlay is off and when the live dots have taken over. The live strikes are
+  // not a tile at all: they are streamed and drawn by StrikeLayer, below.
   property bool lightningEnabled: false
   property var lightningTileUrlFor: null
   property int lightningEpoch: 0
+
+  // The live strikes drawn as dots when the live layer is the one on screen,
+  // streamed from LightningMaps' WebSocket. `lightningStrikesRevision` bumps
+  // whenever the buffer changes; `lightningLive` is true only once the stream
+  // is connected, so the archive tile and the dots never double-draw.
+  property var lightningStrikes: []
+  property int lightningStrikesRevision: 0
+  property bool lightningLive: false
 
   // Whether the loop is resting on the newest frame. The overlay is live data
   // for now, so it belongs over the newest frame and not over a moment from an
@@ -239,9 +249,13 @@ Item {
     }
 
     // ---- Lightning overlay ----------------------------------------------
-    // Live strokes over the radar, from the LightningMaps tile server. Requested
-    // at the map's own zoom — the source runs to z16, past where this map stops
-    // — and refreshed by the panel as the two-minute cache bucket turns over.
+    // The archive tile layer: the last two hours of strokes, from the
+    // LightningMaps tile server. Requested at the map's own zoom — the source
+    // runs to z16, past where this map stops — and refreshed by the panel as
+    // the two-minute cache bucket turns over. It covers the zoomed-out view,
+    // and while it does `tileUrlFor` answers, the live dots below are hidden;
+    // when the live feed is connected the panel returns "" here, so the two
+    // never double-draw.
     //
     // These tiles load straight from the network rather than through the tile
     // cache: they are small (a 256 px palette image, typically under a few
@@ -251,11 +265,11 @@ Item {
     // that fails is left alone: it is not the radar, so it must not raise the
     // map's radar notices.
     //
-    // The strokes are live, so the layer is faded out whenever the loop is
-    // showing an older frame (see `lightningOnLatestFrame`); the tiles stay loaded
-    // behind the fade so switching back to the newest frame is instant. The
-    // layer covers the last two hours of strokes, the oldest drawn blue and
-    // the newest yellow.
+    // The archive's strokes are recent, so the layer is faded out whenever the
+    // loop is showing an older frame (see `lightningOnLatestFrame`); the tiles
+    // stay loaded behind the fade so switching back to the newest frame is
+    // instant. The archive covers two hours, the oldest drawn blue and the
+    // newest yellow.
     TileLayer {
       id: lightning
       anchors.fill: parent
@@ -264,8 +278,32 @@ Item {
       centerLongitude: root.centerLongitude
       zoom: root.zoom
       tileUrlFor: root.lightningEnabled ? root.lightningTileUrlFor : null
-      revision: "lightning:" + root.lightningEpoch
+      // `lightningLive` is folded in so that the tiles repoint the moment the
+      // live feed connects or drops: the archive must clear when the dots take
+      // over, and reload when they cannot run, without waiting for the next
+      // two-minute epoch.
+      revision: "lightning:" + root.lightningEpoch + ":" + root.lightningLive
       smooth: true
+      opacity: root.lightningOnLatestFrame ? 1 : 0
+      Behavior on opacity {
+        NumberAnimation { duration: 380; easing.type: Easing.InOutQuad }
+      }
+    }
+
+    // ---- Live lightning strikes ------------------------------------------
+    // The zoomed-in live layer, drawn as dots by the plugin rather than fetched
+    // as a tile. Only visible while the live layer is actually connected: when
+    // it is not, the archive TileLayer above covers the map at every zoom.
+    StrikeLayer {
+      anchors.fill: parent
+      visible: root.lightningEnabled && root.lightningLive
+      strikes: root.lightningStrikes
+      revision: root.lightningStrikesRevision + ":" + root.centerLatitude.toFixed(4)
+        + ":" + root.centerLongitude.toFixed(4) + ":" + root.zoom
+      centerLatitude: root.centerLatitude
+      centerLongitude: root.centerLongitude
+      zoom: root.zoom
+      lit: root.lightningOnLatestFrame
       opacity: root.lightningOnLatestFrame ? 1 : 0
       Behavior on opacity {
         NumberAnimation { duration: 380; easing.type: Easing.InOutQuad }

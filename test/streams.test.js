@@ -2,7 +2,9 @@ const { test } = require("node:test")
 const assert = require("node:assert")
 const { readFileSync, readdirSync } = require("node:fs")
 const { join } = require("node:path")
-const { RadarModel, TileCache } = require("./load.js")
+const { RadarModel, TileCache, loadLibrary } = require("./load.js")
+
+const Strikes = loadLibrary("Strikes.js")
 
 // Every stream that reaches the shell process, pinned by name.
 //
@@ -56,6 +58,15 @@ const PROCESSES = [
   { id: "flareProc", file: "Panel.qml", collects: true, builder: "flareCommand" },
 ]
 
+// Streams: read back into the process line by line, with no collector of their
+// own. Kept apart from PROCESSES so the collector and answered-flag checks,
+// which assume one whole response arriving at once, skip them cleanly. What
+// bounds a stream is instead the parser turning the feed into bounded lines and
+// the library capping how many of those lines are retained.
+const STREAMS = [
+  { id: "strikeProc", file: "Panel.qml" },
+]
+
 // Files read straight into the process, and why each one carries no ceiling of
 // its own. All four are deliberate; see the tests for the reasoning.
 const FILE_READS = [
@@ -90,7 +101,7 @@ test("the processes in the sources are the ones written down here", () => {
   const found = idsOf(/Process \{\s*\n\s*id: (\w+)/g)
   assert.deepStrictEqual(
     found.map(p => `${p.file}:${p.id}`).sort(),
-    PROCESSES.map(p => `${p.file}:${p.id}`).sort())
+    PROCESSES.concat(STREAMS).map(p => `${p.file}:${p.id}`).sort())
 })
 
 test("the file reads in the sources are the ones written down here", () => {
@@ -109,6 +120,29 @@ test("only the processes marked as collecting have a collector", () => {
   }
   assert.strictEqual(collectors.length, PROCESSES.filter(p => p.collects).length,
     `collectors found: ${collectors.map(c => c.id).join(", ")}`)
+})
+
+test("a streaming process is read line by line, never collected whole", () => {
+  // A stream has no end to wait for, so a collector would grow for the life of
+  // the session. SplitParser hands over one bounded line at a time instead.
+  for (const stream of STREAMS) {
+    const text = source[stream.file]
+    const rest = text.slice(text.indexOf(`id: ${stream.id}`))
+    const next = rest.indexOf("\n  Process {")
+    const block = next === -1 ? rest : rest.slice(0, next)
+    assert.match(block, /SplitParser/, `${stream.id} does not split its output into lines`)
+    assert.ok(!block.includes("StdioCollector"),
+      `${stream.id} would collect an endless stream whole`)
+  }
+})
+
+test("what bounds a stream is the parser and the library, not a byte ceiling", () => {
+  // There is no collector to cap, so the ceiling has to live where each line is
+  // handed over (the line length) and where it is kept (the buffer size).
+  assert.ok(Strikes.MAX_LINE > 0, "a strike line has no length ceiling")
+  assert.ok(Strikes.MAX_STRIKES > 0, "the strike buffer has no size ceiling")
+  assert.match(source["Panel.qml"], /Strikes\.parseLine/,
+    "the stream is not handed through the parser that enforces the cap")
 })
 
 // ------------------------------------------------------------------ ceilings
