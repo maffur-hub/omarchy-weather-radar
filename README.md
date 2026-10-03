@@ -1,4 +1,4 @@
-# Weather Radar for Omarchy
+# Weather for Omarchy
 
 Live weather radar for the [Omarchy](https://omarchy.org) bar. Click the bar
 icon for a map centred on your location, scrub through the last two hours of
@@ -27,10 +27,12 @@ weather widget, which sits in the centre by default:
 omarchy plugin enable eduardodallecort.weather-radar --section center --after omarchy.weather
 ```
 
-![The Omarchy bar showing the clock, the stock weather widget and the radar scope icon beside it](screenshots/bar.webp)
+![The Omarchy bar showing the clock, the stock weather widget and the weather icon beside it](screenshots/bar.webp)
 
-The icon is a radar scope, which on its own says "radar" rather than "weather";
-standing next to a weather widget supplies the rest. `--section` takes `left`,
+The icon reflects the current conditions at the configured location — the same
+glyph the Weather tab draws — so standing next to the stock weather widget
+supplies nothing it does not already say. Before the first reading, or with no
+location set, it falls back to the radar scope glyph. `--section` takes `left`,
 `center` or `right`, and `--before` works like `--after`. Re-running `enable`
 rewrites the widget's entry, so move it before tuning the settings rather than
 after.
@@ -157,6 +159,32 @@ Radar shows **precipitation**, not cloud. A completely overcast sky with no rain
 falling reads as an empty map — that is correct, not a fault. Warmer colours
 mean heavier precipitation, and the most intense cores usually indicate hail.
 
+### The lightning overlay
+
+The map can draw a **lightning overlay** beside the radar, toggled from the
+OVERLAYS row in the panel and sourced from the LightningMaps/Blitzortung
+community detection network. It draws **two layers, chosen by the map zoom**.
+
+Zoomed in — map zoom **6 or closer** — it draws the **real-time** layer: the
+**last hour** of strokes, refreshed live. That is the sharpest view, and it is
+drawn only while the loop rests on the newest frame; scrubbing or playing into
+the past fades it out, since those strikes did not happen at that past moment,
+and it returns already loaded when the loop comes back to the newest frame.
+
+Zoomed out — below zoom 6 — it draws the **two-hour archive** instead: more
+reach for an overview, at the cost of the newest few minutes, which the source
+withholds from the archive.
+
+The panel's colour key switches with the layer and now labels the **age in
+minutes on each swatch**: the real-time layer in ten-minute bands, amber through
+to dark red, and the archive in twenty-minute bands, yellow through orange and
+red to violet and blue.
+
+While the map is open it refreshes on its own every couple of minutes. As with
+the radar, it is best-effort community data with no guarantee, in the spirit of
+the **Not a life-safety tool** caveat above, and it appears wherever the network
+has coverage.
+
 ### The base map
 
 The coastlines, borders, lakes, rivers, city footprints and place names are
@@ -228,21 +256,19 @@ offline without a warning over it.
 
 ## The weather tab
 
-Between the map and the aurora sits the **WEATHER** tab: the forecast where
-you are, from [Open-Meteo](https://open-meteo.com) — the service the overlays
-and the alert forecast already call — for the same location, city name and
-coordinate the map uses.
+Ahead of the radar map and the aurora comes the **WEATHER** tab: the forecast
+where you are, from [Open-Meteo](https://open-meteo.com) — the service the
+overlays and the alert forecast already call — for the same location, city name
+and coordinate the map uses.
 
 The fetch belongs to the service rather than to the panel that draws it, and
-that is what the tab's own state is counted for: the service counts the panels
-currently showing the tab **while those panels are open**, and asks again
-every half hour while that count is above zero. Two monitors with the tab up
+that is what keeps it to one request per machine: the service fetches from the
+configured location **at all times**, every half hour, because the bar icon
+needs a live reading even with no panel open. Two monitors with the tab up
 therefore cost one request between them, and the reading outlives the panel
-it was asked for, so reopening has something to show at once. Closing the
-panel stops the asking — so does switching to the map or the aurora, or never
-opening the tab at all — while opening the panel on the tab, opening the tab
-itself, and moving the city under it all ask for the current reading then and
-there.
+it was asked for, so reopening has something to show at once. Opening the
+panel on the tab, switching to it, and moving the city under it all ask for
+the current reading immediately.
 
 What is on it:
 
@@ -255,14 +281,18 @@ What is on it:
   colour. Between the figures and the bars, one line for what is coming: when
   the next rain is due — "tomorrow" marked as such when it crosses midnight —
   and how much of it the next twelve or twenty-four hours carry, or that none
-  is expected in the next day at all.
+  is expected in the next day at all. The daily chart can be unfolded with a
+  click into an hourly chart of the last 24 completed hours ("Last 24 hours"),
+  which is hidden until asked for.
 - **Next 48 hours** — a row per hour, scrolled sideways: the hour, the glyph,
   the temperature, and the chance of rain in percent where there is one. Where
   the strip crosses into a new day the hour is replaced by that day's weekday,
   in the accent colour and bold, so the boundary is seen rather than counted
   out in hours.
 - **7-day forecast** — one row per day: the day, the glyph, the description,
-  the chance of rain, the rainfall expected, and the high over the low.
+  the chance of rain, the rainfall expected, and the high over the low. Each
+  day can be clicked to expand a summary of the readings the row has no room
+  for — wind and gusts, UV, sunrise and sunset — and clicking again closes it.
 
 The units are metric throughout — °C, mm, km/h — the way the rest of the
 plugin asks for them. A reading the forecast does not have is left out of its

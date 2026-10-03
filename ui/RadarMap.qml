@@ -45,6 +45,13 @@ Item {
   property var lightningTileUrlFor: null
   property int lightningEpoch: 0
 
+  // Whether the loop is resting on the newest frame. The overlay is live data
+  // for now, so it belongs over the newest frame and not over a moment from an
+  // hour ago, where the same strokes would be drawn against the wrong map.
+  // Fading rather than hiding keeps the tiles loaded, so returning to the
+  // newest frame shows them at once.
+  property bool lightningOnLatestFrame: true
+
   // The satellite picture layer. Drawn under the radar, like a base map with
   // clouds in it; a plain XYZ raster source (NASA GIBS) at the map's own zoom.
   property bool satelliteEnabled: false
@@ -243,6 +250,12 @@ Item {
     // stays bounded by the layer's `sourceSize`, as every image here is. A tile
     // that fails is left alone: it is not the radar, so it must not raise the
     // map's radar notices.
+    //
+    // The strokes are live, so the layer is faded out whenever the loop is
+    // showing an older frame (see `lightningOnLatestFrame`); the tiles stay loaded
+    // behind the fade so switching back to the newest frame is instant. The
+    // layer covers the last two hours of strokes, the oldest drawn blue and
+    // the newest yellow.
     TileLayer {
       id: lightning
       anchors.fill: parent
@@ -253,7 +266,7 @@ Item {
       tileUrlFor: root.lightningEnabled ? root.lightningTileUrlFor : null
       revision: "lightning:" + root.lightningEpoch
       smooth: true
-      opacity: 1
+      opacity: root.lightningOnLatestFrame ? 1 : 0
       Behavior on opacity {
         NumberAnimation { duration: 380; easing.type: Easing.InOutQuad }
       }

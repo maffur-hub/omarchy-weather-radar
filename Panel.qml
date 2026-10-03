@@ -171,8 +171,10 @@ Panel {
   }
   property bool panned: false
 
-  // Which tab is showing: "radar", "aurora" or "weather".
-  property string view: "radar"
+  // Which tab is showing: "radar", "aurora" or "weather". The panel opens on
+  // the weather tab, which is drawn first; the map and the aurora are a click
+  // away.
+  property string view: "weather"
 
   // ---------------------------------------------------------------------------
   // Location editing
@@ -543,10 +545,6 @@ Panel {
       root.radar.releaseManifest(root.tileOwner)
       root.manifestHeld = false
     }
-    // A panel closed with the weather tab up stops the cadence with it. The
-    // tab stays selected, so this is the only place that notices — reopening
-    // counts it again from onOpened.
-    root.dropWeatherConsumer()
     root.controller.hide()
     setCenterHoverRevealSuppressed(false)
   }
@@ -562,13 +560,8 @@ Panel {
   // still holds the manifest — unplugging a screen with the map open. Without
   // this the refcount never comes back down and the service keeps fetching
   // frames for a panel nobody has.
-  //
-  // The weather tab is counted the same way, for the same reason: the service's
-  // cadence timer runs on that count, and a panel destroyed while it holds a
-  // place in it would leave that place taken for the rest of the session.
   Component.onDestruction: {
     if (manifestHeld && root.radar && root.radar.releaseManifest) root.radar.releaseManifest(root.tileOwner)
-    root.dropWeatherConsumer()
   }
 
   function onOpened() {
@@ -599,10 +592,9 @@ Panel {
     // retries the tiles that failed while it was closed (see the service's
     // retryFailedTiles), and the layers have to notice.
     frameEpoch++
-    // Opening registers the weather tab as a consumer for as long as this
-    // panel stays open — which is also the moment to ask for a current
-    // reading, so addWeatherConsumer does both.
-    if (root.weatherTab) root.addWeatherConsumer()
+    // Opening on the weather tab is also the moment to ask for a current
+    // reading: the service's own cadence can be up to half an hour away.
+    if (root.weatherTab) root.refreshWeatherNow()
     // The canvas can only read pixels while it is on screen, so opening is
     // the moment to ask.
     Qt.callLater(function() { coverageProbe.probe() })
@@ -648,11 +640,50 @@ Panel {
   function radarTileUrlA(z, x, y) { return root.showRain ? root.radarTileUrlForTime(root.frameA, z, x, y) : "" }
   function radarTileUrlB(z, x, y) { return root.showRain ? root.radarTileUrlForTime(root.frameB, z, x, y) : "" }
 
-  // One lightning tile, with the two-minute cache bucket in the URL so that
-  // asking again after the server regenerates is not answered from a cache.
+  // The legend for the active layer: the real-time hour in ten-minute bands
+  // (the amber the live tiles draw), or the two-hour archive in twenty-minute
+  // bands (its yellow-through-blue). Newest on the left.
+  readonly property var lightningLegend: root.lightningLive
+    ? [
+        { colour: "#fab40a", age: "0–10" },
+        { colour: "#f0960a", age: "10–20" },
+        { colour: "#e6780a", age: "20–30" },
+        { colour: "#dc6e0a", age: "30–40" },
+        { colour: "#d25a0a", age: "40–50" },
+        { colour: "#c8460a", age: "50–60" }
+      ]
+    : [
+        { colour: "#ffff00", age: "0–20" },
+        { colour: "#f5aa0a", age: "20–40" },
+        { colour: "#e15a0a", age: "40–60" },
+        { colour: "#c00c3c", age: "60–80" },
+        { colour: "#aa125a", age: "80–100" },
+        { colour: "#412ee6", age: "100–120" }
+      ]
+
+  // Which lightning layer the map is showing. Close in, the real-time layer:
+  // the last hour as it happens. Further out, where the whole state is on
+  // screen, the archive is worth more than the last few minutes — it carries
+  // two hours, at the cost of the newest strokes, which the source withholds
+  // until they are a few minutes old.
+  readonly property bool lightningLive: RadarModel.lightningLiveAt(root.zoom)
+
+  // The two hours the lightning overlay covers, ending on the two-minute
+  // cache bucket so every tile in one refresh shares a window and the server's
+  // image for it. Rebuilt when the panel refreshes the layer — it reads
+  // `lightningEpoch` for that — rather than once per tile.
+  readonly property var lightningWindow: {
+    var epoch = root.lightningEpoch
+    return RadarModel.lightningWindow(Date.now())
+  }
+
   function lightningTileUrlFor(z, x, y) {
-    var bucket = Math.floor(Date.now() / 1000 / RadarModel.LIGHTNING_TILE_BUCKET_SEC)
-    return RadarModel.lightningTileUrl(z, x, y, bucket)
+    if (root.lightningLive) {
+      var bucket = Math.floor(Date.now() / 1000 / RadarModel.LIGHTNING_TILE_BUCKET_SEC)
+      return RadarModel.lightningLiveTileUrl(z, x, y, bucket)
+    }
+    var span = root.lightningWindow
+    return RadarModel.lightningTileUrl(z, x, y, span.from, span.to)
   }
 
   // One satellite tile, at the map's own zoom.
@@ -931,37 +962,20 @@ Panel {
   readonly property bool weatherFailed: root.radar ? root.radar.weatherFailed === true : false
   readonly property bool weatherLoading: root.radar ? root.radar.weatherChecking === true : false
 
-  // Refcounted rather than left to the tab's visibility, the way the frame
-  // list is: two monitors can show the weather tab, and neither may decide
-  // alone whether fetching should stop. The count belongs to the service —
-  // its cadence timer runs on it — because it has to outlive this panel.
-  //
-  // What is counted is the tab being up in a panel that is itself open, not
-  // the tab being selected: a closed panel has nothing to show, and a count
-  // that survived closing would leave the service polling for a forecast
-  // nobody can see for the rest of the session. `weatherCounted` is this
-  // panel's own half of that — whether it is currently holding a place in
-  // the count — so that add and drop are each other's inverse and neither
-  // can be applied twice.
-  property bool weatherCounted: false
-
-  function addWeatherConsumer() {
-    if (root.weatherCounted || !root.radar || !root.weatherTab) return
-    root.weatherCounted = true
-    root.radar.weatherConsumers = root.radar.weatherConsumers + 1
+  // The service keeps the reading live on its own — its cadence is gated on the
+  // configured location, not on a panel, because the bar icon draws the current
+  // conditions whether or not this panel is open. There is therefore no
+  // consumer to count here: the panel only asks the service for a fresh reading
+  // when the tab comes up, a request the service would otherwise not make for
+  // up to half an hour.
+  function refreshWeatherNow() {
+    if (!root.radar || !root.radar.refreshWeather) return
     Qt.callLater(root.radar.refreshWeather)
   }
 
-  function dropWeatherConsumer() {
-    if (!root.weatherCounted || !root.radar) return
-    root.weatherCounted = false
-    root.radar.weatherConsumers = Math.max(0, root.radar.weatherConsumers - 1)
-  }
-
   onWeatherTabChanged: {
-    if (!root.opened) return
-    if (root.weatherTab) root.addWeatherConsumer()
-    else root.dropWeatherConsumer()
+    if (!root.opened || !root.weatherTab) return
+    root.refreshWeatherNow()
   }
 
   // The radar tiles covering the view, at the zoom the radar is fetched at.
@@ -1143,28 +1157,14 @@ Panel {
         width: parent.width
         spacing: Style.space(10)
 
-        // The three views of this panel: the radar map, the weather forecast
-        // and the aurora. The radar is the map and its overlays; the weather
-        // tab is the current conditions, the seven-day outlook and the
-        // rainfall record; the aurora is a polar view of the southern oval
-        // from NOAA OVATION.
+        // The three views of this panel, weather first: the forecast and the
+        // rainfall record, the radar map with its overlays, and the aurora — a
+        // polar view of the southern oval from NOAA OVATION.
         Row {
           id: tabs
           width: parent.width
           spacing: Style.space(6)
           readonly property real cellWidth: (width - spacing * 2) / 3
-
-          Button {
-            width: tabs.cellWidth
-            text: "RADAR"
-            fontSize: Style.font.bodySmall
-            fontFamily: Style.font.family
-            foreground: root.bar ? root.bar.foreground : Color.foreground
-            background: root.bar ? root.bar.background : Color.background
-            bordered: true
-            active: root.view === "radar"
-            onClicked: root.view = "radar"
-          }
 
           Button {
             width: tabs.cellWidth
@@ -1183,6 +1183,18 @@ Panel {
               // when the view does change.
               if (root.radar) Qt.callLater(root.radar.refreshWeather)
             }
+          }
+
+          Button {
+            width: tabs.cellWidth
+            text: "RADAR"
+            fontSize: Style.font.bodySmall
+            fontFamily: Style.font.family
+            foreground: root.bar ? root.bar.foreground : Color.foreground
+            background: root.bar ? root.bar.background : Color.background
+            bordered: true
+            active: root.view === "radar"
+            onClicked: root.view = "radar"
           }
 
           Button {
@@ -1220,6 +1232,7 @@ Panel {
           lightningEnabled: root.showLightning
           lightningTileUrlFor: root.lightningTileUrlFor
           lightningEpoch: root.lightningEpoch
+          lightningOnLatestFrame: root.isLatestFrame
 
           satelliteEnabled: root.showSatellite
           satelliteTileUrlFor: root.satelliteTileUrlFor
@@ -1344,6 +1357,59 @@ Panel {
                 bordered: true
                 active: modelData.on
                 onClicked: root.toggleLayer(modelData.key)
+              }
+            }
+          }
+
+          // The strike colours code for age, and the two layers use different
+          // palettes, so the key follows whichever is showing. Each swatch
+          // carries the band it stands for; the ranges are the source's own
+          // even division of the window.
+          Row {
+            visible: root.showLightning
+            width: parent.width
+            spacing: Style.space(6)
+
+            Text {
+              textFormat: Text.PlainText
+              text: "Strike age (min)"
+              color: root.bar ? root.bar.foreground : Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              opacity: 0.7
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Row {
+              spacing: Style.space(3)
+              anchors.verticalCenter: parent.verticalCenter
+
+              Repeater {
+                model: root.lightningLegend
+
+                Column {
+                  required property var modelData
+                  spacing: 1
+                  anchors.verticalCenter: parent.verticalCenter
+
+                  Rectangle {
+                    width: Style.space(12)
+                    height: Style.space(8)
+                    radius: 1
+                    color: modelData.colour
+                    anchors.horizontalCenter: parent.horizontalCenter
+                  }
+
+                  Text {
+                    textFormat: Text.PlainText
+                    text: modelData.age
+                    color: root.bar ? root.bar.foreground : Color.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption * 0.8
+                    opacity: 0.7
+                    anchors.horizontalCenter: parent.horizontalCenter
+                  }
+                }
               }
             }
           }

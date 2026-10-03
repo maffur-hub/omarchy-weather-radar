@@ -57,25 +57,48 @@ test("the coverage mask is requested from the host alone", () => {
   assert.strictEqual(RadarModel.coverageTileUrl("", 512, 7, 0, 0), "")
 })
 
-test("a lightning tile is a standard XYZ request to the fixed host", () => {
-  const url = RadarModel.lightningTileUrl(7, 117, 77, 14915680)
-  assert.strictEqual(url,
-    "https://tiles.lightningmaps.org/?x=117&y=77&z=7&s=256&t=2&T=14915680")
-  // The two-minute bucket is what keeps a refreshed tile from being answered
-  // from a cache; without one it still asks the same place, for that bucket 0.
-  assert.strictEqual(RadarModel.lightningTileUrl(7, 117, 77, 0),
-    "https://tiles.lightningmaps.org/?x=117&y=77&z=7&s=256&t=2&T=0")
+test("a lightning tile asks for a two-hour window on the fixed host", () => {
+  const from = Date.UTC(2026, 9, 3, 5, 0, 0)
+  const to = Date.UTC(2026, 9, 3, 7, 0, 0)
+  assert.strictEqual(RadarModel.lightningTileUrl(7, 117, 77, from, to),
+    "https://tiles.lightningmaps.org/?x=117&y=77&z=7&s=256"
+    + "&from=2026-10-03T05:00:00.000Z&to=2026-10-03T07:00:00.000Z")
+})
+
+test("a live lightning tile asks the t=5 layer with the cache bucket", () => {
+  assert.strictEqual(RadarModel.lightningLiveTileUrl(7, 117, 77, 14915680),
+    "https://tiles.lightningmaps.org/?x=117&y=77&z=7&s=256&t=5&T=14915680")
+  // An unparseable bucket still asks the current one, bucket 0.
+  assert.strictEqual(RadarModel.lightningLiveTileUrl(7, 0, 0, "x"),
+    "https://tiles.lightningmaps.org/?x=0&y=0&z=7&s=256&t=5&T=0")
+})
+
+test("a lightning window is two hours ending on the cache bucket", () => {
+  const now = 1780000000000
+  const window = RadarModel.lightningWindow(now)
+  assert.strictEqual(window.to % (RadarModel.LIGHTNING_TILE_BUCKET_SEC * 1000), 0)
+  assert.strictEqual(window.to - window.from, RadarModel.LIGHTNING_WINDOW_SEC * 1000)
+  assert.ok(window.to <= now && now - window.to < RadarModel.LIGHTNING_TILE_BUCKET_SEC * 1000)
 })
 
 test("a lightning tile outside the grid is not a request", () => {
-  assert.strictEqual(RadarModel.lightningTileUrl(-1, 0, 0, 1), "")
-  assert.strictEqual(RadarModel.lightningTileUrl(7, 128, 0, 1), "")
-  assert.strictEqual(RadarModel.lightningTileUrl(7, 0, 128, 1), "")
-  assert.strictEqual(RadarModel.lightningTileUrl(7, 1.5, 0, 1), "")
-  // An unparseable bucket is not a reason to refuse the tile — it asks for
-  // the current one, bucket 0.
-  assert.strictEqual(RadarModel.lightningTileUrl(7, 0, 0, "x"),
-    "https://tiles.lightningmaps.org/?x=0&y=0&z=7&s=256&t=2&T=0")
+  assert.strictEqual(RadarModel.lightningTileUrl(-1, 0, 0, 0, 1), "")
+  assert.strictEqual(RadarModel.lightningTileUrl(7, 128, 0, 0, 1), "")
+  assert.strictEqual(RadarModel.lightningTileUrl(7, 0, 128, 0, 1), "")
+  assert.strictEqual(RadarModel.lightningTileUrl(7, 1.5, 0, 0, 1), "")
+  // An unparseable instant is not a window to ask for.
+  assert.strictEqual(RadarModel.lightningTileUrl(7, 0, 0, "x", 1), "")
+  // (live builder)
+  assert.strictEqual(RadarModel.lightningLiveTileUrl(-1, 0, 0, 1), "")
+  assert.strictEqual(RadarModel.lightningLiveTileUrl(7, 128, 0, 1), "")
+})
+
+test("the real-time lightning layer is used only when zoomed in", () => {
+  assert.strictEqual(RadarModel.lightningLiveAt(3), false)
+  assert.strictEqual(RadarModel.lightningLiveAt(5), false)
+  assert.strictEqual(RadarModel.lightningLiveAt(6), true)
+  assert.strictEqual(RadarModel.lightningLiveAt(9), true)
+  assert.strictEqual(RadarModel.lightningLiveAt(6.5), false)
 })
 
 test("a geocoding query is escaped rather than pasted into the URL", () => {

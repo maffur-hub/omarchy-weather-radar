@@ -3,6 +3,7 @@ import qs.Commons
 import "lib/Alerts.js" as Alerts
 import "lib/Glyphs.js" as Glyphs
 import "lib/Settings.js" as Settings
+import "lib/Weather.js" as Weather
 import qs.Ui
 
 // Bar pill for the radar plugin.
@@ -18,8 +19,15 @@ BarWidget {
 
   readonly property var radar: bar && bar.shell ? bar.shell.serviceFor("eduardodallecort.weather-radar") : null
 
-  // Defined in Glyphs so the bar and the notification cannot drift.
-  readonly property string icon: Glyphs.RADAR
+  // The current conditions when the service has a reading, and the radar glyph
+  // until the first one lands or when there is no location. Drawn through
+  // Weather.iconForCode so the bar and the panel cannot show different skies
+  // for the same code.
+  readonly property string icon: {
+    if (radar && radar.weather && radar.weather.current)
+      return Weather.iconForCode(radar.weather.current.weatherCode, !radar.weather.current.isDay)
+    return Glyphs.RADAR
+  }
 
   readonly property bool showLabel: Settings.showLabel(settings)
   readonly property string summary: radar ? radar.barSummary : ""

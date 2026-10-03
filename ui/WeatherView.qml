@@ -34,6 +34,10 @@ Column {
   readonly property var rain: (hasData && weather.rain) ? weather.rain : null
   readonly property var hourly: (hasData && weather.hourly) ? weather.hourly : []
   readonly property var days: (hasData && weather.forecast) ? weather.forecast : []
+  readonly property var hourlyHistory: (hasData && weather.rain && weather.rain.hours)
+    ? weather.rain.hours : []
+  property bool showHourlyHistory: false
+  property int expandedDay: -1
 
   // JSON's null is not a number, and JavaScript's isFinite() cannot tell the
   // two apart — it reads null as 0 — so a reading has to be tested for being
@@ -62,6 +66,26 @@ Column {
     var low = reading(day.tempMin) ? Math.round(day.tempMin) + "°" : ""
     if (high !== "" && low !== "") return high + "/" + low
     return high !== "" ? high : low
+  }
+
+  // The readings the day row has no space for — wind and its gusts, the UV
+  // peak, and the sun's hours — as one line. Each is left out when the service
+  // had none, so the line shortens rather than growing a gap, exactly as the
+  // conditions line does.
+  function daySummary(day) {
+    if (!day) return ""
+    var bits = []
+    if (reading(day.windMax)) {
+      var wind = "Wind " + Math.round(day.windMax) + " km/h"
+      if (reading(day.gustMax)) wind += ", gusts " + Math.round(day.gustMax)
+      bits.push(wind)
+    }
+    if (reading(day.uvMax)) bits.push("UV " + Math.round(day.uvMax))
+    var rise = clockOf(day.sunrise)
+    if (rise !== "") bits.push("Sunrise " + rise)
+    var set = clockOf(day.sunset)
+    if (set !== "") bits.push("Sunset " + set)
+    return bits.join(" · ")
   }
 
   // The service stamps its answer in the location's own time, as a whole ISO
@@ -379,6 +403,60 @@ Column {
     opacity: 0.4
   }
 
+  // The hourly history: the last day of completed hours, on its own row below
+  // the daily chart and hidden until asked for. The seven daily bars answer
+  // "which day was wet"; unfolding one of them into its hours is a second
+  // question, worth the space only when someone is asking it.
+  Item {
+    id: hourlyHistoryToggle
+    visible: root.hasData && root.hourlyHistory.length > 0
+    width: parent.width
+    height: Style.space(20)
+
+    Row {
+      anchors.fill: parent
+      spacing: Style.space(6)
+
+      Text {
+        textFormat: Text.PlainText
+        text: (root.showHourlyHistory ? "▾" : "▸") + "  Last 24 hours"
+        color: root.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.bodySmall
+        opacity: 0.85
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        text: root.rain ? root.mmOf(root.rain.last24Mm) : ""
+        color: root.accent
+        font.family: Style.font.family
+        font.pixelSize: Style.font.bodySmall
+        anchors.verticalCenter: parent.verticalCenter
+      }
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.showHourlyHistory = !root.showHourlyHistory
+    }
+  }
+
+  HourlyRainChart {
+    visible: root.showHourlyHistory && root.hourlyHistory.length > 0
+    width: parent.width
+    height: Style.space(88)
+    hours: root.hourlyHistory
+    maxMm: root.rain ? root.rain.maxHourMm : 0
+    barColor: root.foreground
+    hoverColor: root.accent
+    labelColor: Qt.darker(root.foreground, 1.6)
+    fontFamily: Style.font.family
+    labelSize: Style.font.caption
+  }
+
   // ---------------------------------------------------------------------------
   // Next 48 hours
   // ---------------------------------------------------------------------------
@@ -514,89 +592,112 @@ Column {
     Repeater {
       model: root.days
 
-      delegate: Row {
-        id: dayRow
+      delegate: Column {
+        id: dayCell
         width: parent.width
-        height: Style.space(22)
-        spacing: Style.space(6)
-        opacity: modelData.isToday ? 1 : 0.75
+        spacing: 0
 
-        // Every column but the description is a fixed width, so the days line
-        // up under one another however long each description runs — and the
-        // ones that would hide keep their width, printing nothing instead.
-        // Row skips an invisible item, which would drag every column after it
-        // one place left on the days with no rain in them.
-        readonly property real fixedWidth: Style.space(54) + Style.space(20)
-          + Style.space(34) + Style.space(50) + Style.space(54) + spacing * 5
+        readonly property bool expanded: root.expandedDay === index
 
-        Text {
-          textFormat: Text.PlainText
-          width: Style.space(54)
-          anchors.verticalCenter: parent.verticalCenter
-          text: modelData.label
-          color: root.foreground
-          font.family: Style.font.family
-          font.pixelSize: Style.font.bodySmall
-          font.bold: modelData.isToday
+        Row {
+          id: dayRow
+          width: parent.width
+          height: Style.space(22)
+          spacing: Style.space(6)
+          opacity: modelData.isToday ? 1 : (dayCell.expanded ? 1 : 0.75)
+
+          readonly property real fixedWidth: Style.space(54) + Style.space(20)
+            + Style.space(34) + Style.space(50) + Style.space(54) + spacing * 5
+
+          Text {
+            textFormat: Text.PlainText
+            width: Style.space(54)
+            anchors.verticalCenter: parent.verticalCenter
+            text: modelData.label
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+            font.bold: modelData.isToday
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: Style.space(20)
+            anchors.verticalCenter: parent.verticalCenter
+            horizontalAlignment: Text.AlignHCenter
+            text: Weather.iconForCode(modelData.weatherCode, false)
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.iconLarge
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: Math.max(Style.space(40), dayRow.width - dayRow.fixedWidth)
+            anchors.verticalCenter: parent.verticalCenter
+            elide: Text.ElideRight
+            text: (dayCell.expanded ? "▾ " : "▸ ")
+              + (modelData.description ? modelData.description : Weather.describeCode(modelData.weatherCode))
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: Style.space(34)
+            anchors.verticalCenter: parent.verticalCenter
+            horizontalAlignment: Text.AlignRight
+            text: (root.reading(modelData.precipitationProbability)
+              && modelData.precipitationProbability > 0)
+              ? Math.round(modelData.precipitationProbability) + "%" : ""
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+            opacity: 0.7
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: Style.space(50)
+            anchors.verticalCenter: parent.verticalCenter
+            horizontalAlignment: Text.AlignRight
+            text: root.mmOf(modelData.precipitationSum)
+            color: root.accent
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: Style.space(54)
+            anchors.verticalCenter: parent.verticalCenter
+            horizontalAlignment: Text.AlignRight
+            text: root.dayRange(modelData)
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.expandedDay = dayCell.expanded ? -1 : index
+          }
         }
 
         Text {
           textFormat: Text.PlainText
-          width: Style.space(20)
-          anchors.verticalCenter: parent.verticalCenter
-          horizontalAlignment: Text.AlignHCenter
-          text: Weather.iconForCode(modelData.weatherCode, false)
+          visible: dayCell.expanded
+          width: parent.width
+          text: root.daySummary(modelData)
           color: root.foreground
           font.family: Style.font.family
-          font.pixelSize: Style.font.iconLarge
-        }
-
-        Text {
-          textFormat: Text.PlainText
-          width: Math.max(Style.space(40), dayRow.width - dayRow.fixedWidth)
-          anchors.verticalCenter: parent.verticalCenter
+          font.pixelSize: Style.font.caption
+          opacity: 0.65
           elide: Text.ElideRight
-          text: modelData.description
-            ? modelData.description : Weather.describeCode(modelData.weatherCode)
-          color: root.foreground
-          font.family: Style.font.family
-          font.pixelSize: Style.font.bodySmall
-        }
-
-        Text {
-          textFormat: Text.PlainText
-          width: Style.space(34)
-          anchors.verticalCenter: parent.verticalCenter
-          horizontalAlignment: Text.AlignRight
-          text: (root.reading(modelData.precipitationProbability)
-            && modelData.precipitationProbability > 0)
-            ? Math.round(modelData.precipitationProbability) + "%" : ""
-          color: root.foreground
-          font.family: Style.font.family
-          font.pixelSize: Style.font.bodySmall
-          opacity: 0.7
-        }
-
-        Text {
-          textFormat: Text.PlainText
-          width: Style.space(50)
-          anchors.verticalCenter: parent.verticalCenter
-          horizontalAlignment: Text.AlignRight
-          text: root.mmOf(modelData.precipitationSum)
-          color: root.accent
-          font.family: Style.font.family
-          font.pixelSize: Style.font.bodySmall
-        }
-
-        Text {
-          textFormat: Text.PlainText
-          width: Style.space(54)
-          anchors.verticalCenter: parent.verticalCenter
-          horizontalAlignment: Text.AlignRight
-          text: root.dayRange(modelData)
-          color: root.foreground
-          font.family: Style.font.family
-          font.pixelSize: Style.font.bodySmall
+          topPadding: Style.space(2)
+          bottomPadding: Style.space(2)
         }
       }
     }

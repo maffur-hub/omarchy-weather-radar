@@ -321,6 +321,42 @@ test("today so far exactly on the hour does not add the current reading", () => 
   assert.strictEqual(rain.todayMm, 4.4)
 })
 
+test("the hourly history holds the last 24 completed hours, oldest first", () => {
+  const rain = parsed().rain
+  assert.strictEqual(rain.hours.length, 24)
+  // The row valid at current.time covers the hour that just ended and is
+  // complete; the extra row it contributes is exactly what the cap drops, so
+  // the oldest kept hour is 09-30T20:00, not 09-30T19:00.
+  assert.strictEqual(rain.hours[0].time, "2026-09-30T20:00")
+  assert.strictEqual(rain.hours[0].hour, "20")
+  assert.strictEqual(rain.hours[23].time, "2026-10-01T19:00")
+  assert.strictEqual(rain.hours[23].hour, "19")
+  // Nineteen complete hours of 0.2 mm today, nothing on the hours before
+  // midnight.
+  assert.strictEqual(rain.last24Mm, 3.8)
+  assert.strictEqual(rain.maxHourMm, 0.2)
+})
+
+test("the hourly history never includes an hour still under way", () => {
+  const rain = parsedWith(data => {
+    data.hourly.precipitation[25] = 9.9   // 20:00, a forecast that has not fallen
+  }).rain
+  for (const entry of rain.hours) {
+    assert.ok(entry.time <= "2026-10-01T19:00", entry.time)
+  }
+  assert.strictEqual(rain.hours[rain.hours.length - 1].mm, 0)
+})
+
+test("a dropped hourly reading stays null rather than reading as zero", () => {
+  const rain = parsedWith(data => {
+    data.hourly.precipitation[24] = null  // the completed 19:00 row
+  }).rain
+  assert.strictEqual(rain.hours[rain.hours.length - 1].mm, null)
+  // The dropped row adds nothing; it is not counted as 0 or as any other
+  // invented figure.
+  assert.strictEqual(rain.last24Mm, 3.8)
+})
+
 // --------------------------------------------------------------- semantics
 
 test("WMO codes read back in words", () => {

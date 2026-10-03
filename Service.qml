@@ -29,11 +29,11 @@ import "lib/Weather.js" as Weather
 //
 //   3. Decide whether to warn about approaching weather, and say so once.
 //
-//   4. Own the Weather tab's point forecast, and keep the last good reading
-//      of it on disk. It is a fetch like the others, so it is one request per
-//      machine rather than one per monitor; and a reading held by a panel
-//      dies with that panel, while one held here is drawn again when the
-//      shell restarts.
+//   4. Own the point forecast behind the Weather tab and the bar icon, and keep
+//      the last good reading of it on disk. It is a fetch like the others, so
+//      it is one request per machine rather than one per monitor; and a reading
+//      held by a panel dies with that panel, while one held here is drawn again
+//      when the shell restarts.
 //
 // On (3), a note on why the alert reads a point forecast rather than the radar
 // image it draws. Distance alone does not mean approaching — a cell 80 km east
@@ -189,11 +189,10 @@ Item {
 
     if (hasLocation && alertsEnabled) checkNow()
 
-    // The weather tab's own question, asked from here rather than from the
-    // panel: a panel showing the tab has counted itself as a consumer, and
-    // without this a location that arrives or moves under it would leave the
-    // tab waiting out the half-hour cadence for a reading it could have now.
-    if (hasLocation && weatherConsumers > 0) Qt.callLater(refreshWeather)
+    // The weather reading follows the location whenever one arrives or moves,
+    // so both the tab and the bar icon have a current one without waiting out
+    // the half-hour cadence.
+    if (hasLocation) Qt.callLater(refreshWeather)
   }
 
   // ---------------------------------------------------------------------------
@@ -1228,10 +1227,10 @@ Item {
   // still here when the panel is rebuilt, and is on disk when the shell
   // restarts.
   //
-  // Fetching is gated on `weatherConsumers`, the number of open panels showing
-  // the tab, so an installation that never opens it never asks — and one that
-  // closed it stops asking — which is what makes the cadence below affordable
-  // to run unattended.
+  // Fetching follows the configured location rather than any panel being open:
+  // the bar icon draws the current conditions, so the reading has to be live on
+  // an idle bar. It is one request per machine every half hour, shared by every
+  // monitor, which is what makes the cadence affordable to run unattended.
   property var weather: null
   property bool weatherFailed: false
   property bool weatherChecking: false
@@ -1248,7 +1247,6 @@ Item {
   // `requestedFor` in the forecast section above for why nothing else closes
   // that gap — a response is only an answer to the question that was asked.
   property string weatherRequestedFor: ""
-  property int weatherConsumers: 0
 
   // Identity of the configured place — the same string latchPlaceKey is built
   // from, for the same reason: a name or a coordinate moving makes a reading
@@ -1364,10 +1362,13 @@ Item {
     id: weatherTimer
     // Open-Meteo rebuilds its model every few hours, so asking more often only
     // re-fetches the same forecast — and half an hour is short enough that the
-    // tab is rarely more than one model run behind.
+    // tab and the bar icon are rarely more than one model run behind. It runs
+    // from the location alone: the icon needs a reading with no panel open, and
+    // a location the machine does not have is no request to make.
     interval: Weather.WEATHER_REFRESH_MS
     repeat: true
-    running: root.hasLocation && root.weatherConsumers > 0
+    running: root.hasLocation
+    triggeredOnStart: true
     onTriggered: root.refreshWeather()
   }
 
@@ -1429,10 +1430,10 @@ Item {
       root.weatherAnswerTime = Number(record.at) || root.weatherAnswerTime
     }
 
-    // This is the last thing a restarted service reads, and a panel that
-    // counted itself as a consumer while it was loading would otherwise wait
-    // out the whole cadence for a reading that is already in hand.
-    if (weatherConsumers > 0) Qt.callLater(refreshWeather)
+    // The cache is where a session begins, and the live fetch that follows
+    // replaces it as soon as it lands; without this a restarted shell would
+    // wait out the whole cadence before asking for anything newer.
+    Qt.callLater(refreshWeather)
   }
 
   // Written only on a good answer, so the file is always the last thing that
