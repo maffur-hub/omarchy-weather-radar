@@ -31,8 +31,11 @@ omarchy plugin enable eduardodallecort.weather-radar --section center --after om
 
 The icon reflects the current conditions at the configured location — the same
 glyph the Weather tab draws — so standing next to the stock weather widget
-supplies nothing it does not already say. Before the first reading, or with no
-location set, it falls back to the radar scope glyph. `--section` takes `left`,
+supplies nothing it does not already say. Day and night come from the clock at
+the location rather than the forecast's own flag, so a clear night draws a moon
+and a covered one a moon behind cloud even when the last fetch has gone stale.
+Before the first reading, or with no location set, it falls back to the radar
+scope glyph. `--section` takes `left`,
 `center` or `right`, and `--before` works like `--after`. Re-running `enable`
 rewrites the widget's entry, so move it before tuning the settings rather than
 after.

@@ -376,24 +376,55 @@ test("wind directions label onto the sixteen-point compass", () => {
 
 // ------------------------------------------------------------------- glyphs
 
+// Resolved by glyph name against the Nerd Fonts registry, the way
+// test/glyphs.test.js pins its icons: Nerd Fonts renumbered its ranges
+// between major versions, and the font holds a glyph at every position, so a
+// coverage check confirms nothing while a codepoint remembered from a cheat
+// sheet very often draws something else. The day and night forms are
+// different glyphs, which is exactly the pair an off-by-one swap used to
+// reverse.
+const WEATHER_ICONS = {
+  ICON_SUN: [0xE30D, "weather-day_sunny"],
+  ICON_MOON: [0xE32B, "weather-night_clear"],
+  ICON_PARTLY_DAY: [0xE302, "weather-day_cloudy"],
+  ICON_PARTLY_NIGHT: [0xE32E, "weather-night_cloudy"],
+  ICON_CLOUD: [0xE33D, "weather-cloud"],
+  ICON_CLOUD_NIGHT: [0xE37E, "weather-night_alt_cloudy"],
+  ICON_FOG_DAY: [0xE313, "weather-fog"],
+  ICON_FOG_NIGHT: [0xE346, "weather-night_fog"],
+  ICON_SHOWERS_DAY: [0xE308, "weather-day_rain"],
+  ICON_SHOWERS_NIGHT: [0xE333, "weather-night_rain"],
+  ICON_SLEET_DAY: [0xE30A, "weather-day_snow"],
+  ICON_SLEET_NIGHT: [0xE327, "weather-night_alt_snow"],
+  ICON_SLEET: [0xE3AD, "weather-sleet"],
+  ICON_THUNDER: [0xE31D, "weather-thunderstorm"],
+  ICON_RAIN: [0xE318, "weather-rain"],
+  ICON_SNOW: [0xE31A, "weather-snow"]
+}
+
 test("every weather icon is exactly one codepoint", () => {
   // A `\u` escape consumes exactly four hex digits, so writing any of these
   // that way yields a different glyph followed by a stray digit. Nothing
   // reports it; the icon is simply wrong.
-  const names = ["ICON_SUN", "ICON_MOON", "ICON_PARTLY_DAY", "ICON_PARTLY_NIGHT",
-                 "ICON_CLOUD", "ICON_FOG_DAY", "ICON_FOG_NIGHT",
-                 "ICON_SHOWERS_DAY", "ICON_SHOWERS_NIGHT",
-                 "ICON_SLEET_DAY", "ICON_SLEET_NIGHT", "ICON_SLEET",
-                 "ICON_THUNDER", "ICON_RAIN", "ICON_SNOW"]
-  for (const name of names) {
+  for (const name of Object.keys(WEATHER_ICONS)) {
     assert.strictEqual(Array.from(Weather[name]).length, 1, name)
   }
 })
 
-test("codes pick the glyph the tab draws for them", () => {
+test("every weather icon is the codepoint the registry gives for its name", () => {
+  for (const [name, [codepoint, glyphName]] of Object.entries(WEATHER_ICONS)) {
+    assert.strictEqual(Weather[name].codePointAt(0), codepoint,
+      `${name} should be ${glyphName} at U+${codepoint.toString(16).toUpperCase()}`)
+  }
+})
+
+test("codes pick the day or night glyph the tab draws for them", () => {
   assert.strictEqual(Weather.iconForCode(0, false), Weather.ICON_SUN)
   assert.strictEqual(Weather.iconForCode(0, true), Weather.ICON_MOON)
+  assert.strictEqual(Weather.iconForCode(1, false), Weather.ICON_PARTLY_DAY)
+  assert.strictEqual(Weather.iconForCode(2, true), Weather.ICON_PARTLY_NIGHT)
   assert.strictEqual(Weather.iconForCode(3, false), Weather.ICON_CLOUD)
+  assert.strictEqual(Weather.iconForCode(3, true), Weather.ICON_CLOUD_NIGHT)
   assert.strictEqual(Weather.iconForCode(95, false), Weather.ICON_THUNDER)
   assert.strictEqual(Weather.iconForCode(71, false), Weather.ICON_SNOW)
   assert.strictEqual(Weather.iconForCode(61, false), Weather.ICON_RAIN)

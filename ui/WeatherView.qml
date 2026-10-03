@@ -20,6 +20,9 @@ Column {
 
   property var weather: null
   property string locationName: ""
+  // The service decides day or night from the clock at the location; with no
+  // service wired up this stays day, which is what an unlocated reading is.
+  property bool night: false
   property bool loading: false
   property bool failed: false
   property color foreground: "#ffffff"
@@ -435,7 +438,7 @@ Column {
     Text {
       id: nowGlyph
       textFormat: Text.PlainText
-      text: root.current ? Weather.iconForCode(root.current.weatherCode, !root.current.isDay) : ""
+      text: root.current ? Weather.iconForCode(root.current.weatherCode, root.night) : ""
       color: root.foreground
       font.family: Style.font.family
       font.pixelSize: Style.space(34)

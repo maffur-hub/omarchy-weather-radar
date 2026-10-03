@@ -25,7 +25,7 @@ BarWidget {
   // for the same code.
   readonly property string icon: {
     if (radar && radar.weather && radar.weather.current)
-      return Weather.iconForCode(radar.weather.current.weatherCode, !radar.weather.current.isDay)
+      return Weather.iconForCode(radar.weather.current.weatherCode, radar.isNight === true)
     return Glyphs.RADAR
   }
 

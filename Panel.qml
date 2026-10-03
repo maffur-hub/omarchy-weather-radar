@@ -11,6 +11,7 @@ import "lib/TileMath.js" as TileMath
 import "lib/RadarModel.js" as RadarModel
 import "lib/TileCache.js" as TileCache
 import "lib/Overlay.js" as Overlay
+import "lib/Solar.js" as Solar
 import "lib/Strikes.js" as Strikes
 
 // The radar panel.
@@ -707,7 +708,7 @@ Panel {
 
   function refreshSatellite() {
     root.satelliteEpoch++
-    var daytime = Overlay.isDaytime(root.viewLatitude, root.viewLongitude, Date.now())
+    var daytime = Solar.isDaytime(root.viewLatitude, root.viewLongitude, Date.now())
     var layers = Overlay.satelliteLayers(root.viewLatitude, root.viewLongitude, daytime)
     var selection = layers.map(function(layer) { return layer.sensor }).join(",")
     if (selection === root.satelliteSelection) return
@@ -1665,6 +1666,7 @@ Panel {
           width: parent.width
           weather: root.weather
           locationName: root.locationName
+          night: root.radar ? root.radar.isNight === true : false
           // With no location there is nothing to fetch, so "Loading" would be a
           // promise the tab cannot keep; it reads as no forecast instead. Once
           // a reading is in hand — including one the service kept on disk —

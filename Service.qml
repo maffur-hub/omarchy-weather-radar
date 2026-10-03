@@ -7,6 +7,7 @@ import "lib/Basemap.js" as Basemap
 import "lib/Bom.js" as Bom
 import "lib/RadarModel.js" as RadarModel
 import "lib/Settings.js" as Settings
+import "lib/Solar.js" as Solar
 import "lib/TileCache.js" as TileCache
 import "lib/Weather.js" as Weather
 
@@ -1241,6 +1242,29 @@ Item {
   property var weather: null
   property bool weatherFailed: false
   property bool weatherChecking: false
+
+  // Whether the configured place is past its terminator right now. Open-Meteo
+  // carries an `is_day` flag, but it belongs to the last forecast fetched, so a
+  // stale reading leaves a daytime sun up long after dark. Solar.nighttime
+  // computes the answer from the clock at the coordinate instead, and falls
+  // back to that flag only when there is no coordinate to compute from.
+  property double clockNow: Date.now()
+  readonly property bool isNight: {
+    var lat = hasLocation ? parseFloat(location.latitude) : NaN
+    var lon = hasLocation ? parseFloat(location.longitude) : NaN
+    var isDay = weather && weather.current ? weather.current.isDay === true : true
+    return Solar.nighttime(lat, lon, isDay, clockNow)
+  }
+
+  // Ticked once a minute so the bar flips its glyph at sunset rather than at
+  // the next half-hourly fetch, and so a machine that wakes to a stale reading
+  // still draws the right sky.
+  Timer {
+    interval: 60000
+    repeat: true
+    running: root.hasLocation
+    onTriggered: root.clockNow = Date.now()
+  }
 
   // When a response last came back at all, carrying anything usable or not —
   // the two are different questions, and without them apart "has not run yet"

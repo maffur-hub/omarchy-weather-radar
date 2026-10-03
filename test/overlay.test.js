@@ -1,8 +1,8 @@
 const { test } = require("node:test")
 const assert = require("node:assert")
-const { loadLibrary, TileMath, RadarModel } = require("./load.js")
+const { loadLibrary, TileMath, RadarModel, Solar } = require("./load.js")
 
-const Overlay = loadLibrary("Overlay.js", { RadarModel, TileMath })
+const Overlay = loadLibrary("Overlay.js", { RadarModel, TileMath, Solar })
 
 // ------------------------------------------------------------------- grid
 
@@ -212,14 +212,14 @@ test("the satellite picks the nearest geostationary disk, and day from night", (
 })
 
 test("the subsolar point tracks the hour and the season", () => {
-  const noon = Overlay.subsolarPoint(Date.UTC(2026, 9, 3, 12))
+  const noon = Solar.subsolarPoint(Date.UTC(2026, 9, 3, 12))
   assert.ok(Math.abs(noon.longitude) < 5, "subsolar longitude " + noon.longitude)
-  const june = Overlay.subsolarPoint(Date.UTC(2026, 5, 21, 12))
+  const june = Solar.subsolarPoint(Date.UTC(2026, 5, 21, 12))
   assert.ok(june.latitude > 22 && june.latitude < 24.5, "june declination " + june.latitude)
-  const december = Overlay.subsolarPoint(Date.UTC(2026, 11, 21, 12))
+  const december = Solar.subsolarPoint(Date.UTC(2026, 11, 21, 12))
   assert.ok(december.latitude < -22 && december.latitude > -24.5, "december declination " + december.latitude)
-  assert.strictEqual(Overlay.isDaytime(-25, 133, Date.UTC(2026, 9, 3, 9)), true)
-  assert.strictEqual(Overlay.isDaytime(-25, 133, Date.UTC(2026, 9, 3, 19)), false)
+  assert.strictEqual(Solar.isDaytime(-25, 133, Date.UTC(2026, 9, 3, 9)), true)
+  assert.strictEqual(Solar.isDaytime(-25, 133, Date.UTC(2026, 9, 3, 19)), false)
 })
 
 test("live layers carry a frame cache-buster and polar layers do not", () => {
