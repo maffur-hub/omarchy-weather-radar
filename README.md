@@ -309,6 +309,30 @@ reading, and is only ever taken for the place configured now: a forecast
 stored under another city's coordinates is ignored rather than shown under
 this one's name.
 
+For a location in the ACT or NSW the tab also draws the Bureau of
+Meteorology's severe-weather warnings and district forecast text. The warnings
+come from the Bureau's ACT warning product, `IDN21033`, and the district
+forecast from `IDN11022`. They sit at the top of the tab as a collapsed strip
+— a warning count and title line — that expands on a click into each warning's
+title, the hazards it names, the districts it affects and when it expires. Only
+a warning naming a district this location sits in or beside is drawn, so the
+strip stays about the place the tab is showing; with nothing current it is not
+drawn at all.
+
+The Bureau's longer daily forecast paragraph for the district appears inside
+each day's expanded summary on the 7-day forecast, under the same click as the
+wind, UV, sunrise and sunset the row already carries. The header carries a
+second clock beside Open-Meteo's, marked **BOM updated**, and a refresh control
+that asks both providers for a reading at once rather than waiting out the next
+scheduled fetch.
+
+These are the Bureau's public products, not a supported API. They are pinned to
+the ACT/NSW products and matched to a warning by district, so this part of the
+tab is for this machine rather than for general use, and the radar and
+Open-Meteo readings remain the plugin's primary source. A warning drawn here is
+a convenience and not a life-safety tool: the Bureau's own site and the SES
+remain the authority to act on.
+
 ## Location
 
 Click the city name at the bottom of the panel and type to search.

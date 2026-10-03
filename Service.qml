@@ -4,6 +4,7 @@ import Quickshell.Io
 import "lib/Glyphs.js" as Glyphs
 import "lib/Alerts.js" as Alerts
 import "lib/Basemap.js" as Basemap
+import "lib/Bom.js" as Bom
 import "lib/RadarModel.js" as RadarModel
 import "lib/Settings.js" as Settings
 import "lib/TileCache.js" as TileCache
@@ -33,7 +34,9 @@ import "lib/Weather.js" as Weather
 //      the last good reading of it on disk. It is a fetch like the others, so
 //      it is one request per machine rather than one per monitor; and a reading
 //      held by a panel dies with that panel, while one held here is drawn again
-//      when the shell restarts.
+//      when the shell restarts. The same tab draws BOM's severe-weather warning
+//      and NSW/ACT district forecast beside it — a second provider and its own
+//      fetch, but the same reasoning and the same cache.
 //
 // On (3), a note on why the alert reads a point forecast rather than the radar
 // image it draws. Distance alone does not mean approaching — a cell 80 km east
@@ -193,6 +196,10 @@ Item {
     // so both the tab and the bar icon have a current one without waiting out
     // the half-hour cadence.
     if (hasLocation) Qt.callLater(refreshWeather)
+    // The BOM warning and district forecast follow it for the same reason; they
+    // are pinned to the ACT rather than geocoded, but without a location there
+    // is still no reader to fetch them for.
+    if (hasLocation) Qt.callLater(refreshBom)
   }
 
   // ---------------------------------------------------------------------------
@@ -1302,6 +1309,12 @@ Item {
     weatherProc.answered = false
     weatherProc.command = command
     weatherProc.running = true
+
+    // The panel opens the Weather tab by asking for a fresh point reading, and
+    // the same tab draws the BOM warning and district forecast. Asking for them
+    // here keeps that behaviour internal to the service instead of adding a
+    // second panel API, and refreshBom refuses to overlap a cycle already out.
+    Qt.callLater(refreshBom)
   }
 
   Process {
@@ -1423,11 +1436,19 @@ Item {
       record = null
     }
 
-    if (record && typeof record === "object" && record.schema === 1
+    if (record && typeof record === "object"
+        && (record.schema === 1 || record.schema === 2)
         && record.key === weatherKey()
         && record.data && typeof record.data === "object") {
       if (root.weather === null) root.weather = record.data
       root.weatherAnswerTime = Number(record.at) || root.weatherAnswerTime
+      // Schema 2 carries the BOM reading alongside the point forecast, and a
+      // live answer still wins over disk: each is restored only when nothing
+      // has arrived for it yet.
+      if (record.schema === 2 && record.bom && typeof record.bom === "object") {
+        if (root.bomWarnings === null) root.bomWarnings = record.bom.warnings || null
+        if (root.bomForecast === null) root.bomForecast = record.bom.forecast || null
+      }
     }
 
     // The cache is where a session begins, and the live fetch that follows
@@ -1438,15 +1459,139 @@ Item {
 
   // Written only on a good answer, so the file is always the last thing that
   // was actually drawn rather than the last thing attempted. The schema number
-  // is what lets a later shape refuse this record instead of drawing it.
+  // is what lets a later shape refuse this record instead of drawing it. Schema
+  // 2 carries the BOM warning and district forecast beside the point forecast,
+  // so the tab's whole reading survives a restart in one record.
   function storeWeatherCache(parsed) {
     if (weatherCachePath === "") return
     weatherCacheFile.setText(JSON.stringify({
-      schema: 1,
+      schema: 2,
       key: weatherKey(),
       at: Date.now(),
-      data: parsed
+      data: parsed,
+      bom: { warnings: root.bomWarnings, forecast: root.bomForecast }
     }) + "\n")
+  }
+
+  // ---------------------------------------------------------------------------
+  // BOM warnings and district forecast
+  // ---------------------------------------------------------------------------
+
+  // The second provider beside Open-Meteo: the Bureau's severe-weather warning
+  // product and its NSW/ACT district forecast, drawn by the same Weather tab.
+  // They live here for the same reasons the point forecast does — one fetch per
+  // machine rather than one per monitor, and a reading that outlives a panel —
+  // and they travel in that tab's cache. The products are pinned to the ACT
+  // rather than geocoded, so no coordinate is asked of them.
+  property var bomWarnings: null      // { issuedAt, phase, expiry, warnings: [...] }
+  property var bomForecast: null      // { issuedAt, days: [...], synoptic, uv }
+  property bool bomChecking: false
+  property bool bomFailed: false
+  property real bomAnswerTime: 0
+
+  // Which of the two commands is in flight: "warning" then "forecast".
+  property string bomStage: ""
+  // How many of this cycle's two stages have failed. Only both failing is a
+  // failed cycle; one dropped product keeps the other on screen.
+  property int bomFailures: 0
+
+  // The warnings that actually concern the reader: those naming a district this
+  // location sits in or beside. The product may carry hazards for the rest of
+  // the state, and those are not this plugin's to draw.
+  readonly property var activeWarnings: {
+    if (!bomWarnings || !bomWarnings.warnings) return []
+    return bomWarnings.warnings.filter(function(warning) {
+      return Bom.warningConcernsHome(warning)
+    })
+  }
+
+  // Both products, one after the other, through a single process. A shell with
+  // no panel open would otherwise have two requests in flight at once for one
+  // tab; `bomStage` names which command is out.
+  function refreshBom() {
+    if (!hasLocation || bomChecking) return
+    bomChecking = true
+    bomFailures = 0
+    bomStage = "warning"
+    bomProc.answered = false
+    bomProc.command = Bom.warningCommand()
+    bomProc.running = true
+  }
+
+  Process {
+    id: bomProc
+
+    // See manifestProc. `bomChecking` gates every fetch, so a fork that never
+    // happened has to be answered here or the warnings never refresh again.
+    property bool answered: false
+
+    onExited: function(exitCode) {
+      answered = true
+      root.applyBomResponse(exitCode, bomOut.text)
+    }
+    onRunningChanged: if (!running && !answered) root.applyBomResponse(-1, "")
+
+    // The collector holds the output and decides nothing: `onStreamFinished`
+    // fires before the exit code exists, so a transfer cut short by a ceiling
+    // would read as one that completed.
+    stdout: StdioCollector { id: bomOut; waitForEnd: true }
+  }
+
+  function applyBomResponse(exitCode, text) {
+    // The matching parser for whichever command was out. A null parse or a
+    // non-zero exit keeps the previous value, exactly as the point forecast
+    // does: one bad product must not blank a warning that is still current.
+    var parsed = exitCode === 0
+      ? (bomStage === "warning" ? Bom.parseWarnings(text) : Bom.parseForecast(text))
+      : null
+
+    if (bomStage === "warning") {
+      if (parsed) bomWarnings = parsed
+      else bomFailures++
+      // The warning has been answered either way; run the forecast stage next.
+      // Scheduled rather than started here because `exited` fires before
+      // `running` drops, so a start written into this handler would be
+      // overwritten by the drop that follows it, and the running-changed guard
+      // would then read the drop as a failed forecast fork. `answered` is armed
+      // so that guard stays quiet until startBomForecast re-arms the process.
+      bomProc.answered = true
+      bomStage = "forecast"
+      Qt.callLater(root.startBomForecast)
+      return
+    }
+
+    if (parsed) bomForecast = parsed
+    else bomFailures++
+
+    // Both stages are done. The cycle failed only when neither answered, and the
+    // answer time is stamped now that there is a complete reading to time.
+    bomFailed = bomFailures >= 2
+    bomChecking = false
+    bomAnswerTime = Date.now()
+
+    // The BOM products arrive separately from the point forecast, so the cache
+    // is rewritten here as well. Guarded on a reading already held: a BOM
+    // answer with no weather yet must not write `data: null` over the cache.
+    if (root.weather !== null) storeWeatherCache(root.weather)
+  }
+
+  function startBomForecast() {
+    bomProc.answered = false
+    bomProc.command = Bom.forecastCommand()
+    bomProc.running = true
+  }
+
+  Timer {
+    id: bomTimer
+    // Warnings are reissued as storms move and are worth asking after more
+    // often than a forecast changes; the interval lives in Bom.js beside the
+    // products it re-asks for. refreshBom fetches both stages each cycle, so
+    // the district forecast rides along with the faster warning cadence.
+    interval: Bom.WARNING_REFRESH_MS
+    repeat: true
+    running: root.hasLocation
+    triggeredOnStart: true
+    onTriggered: root.refreshBom()
   }
 
   // ---------------------------------------------------------------------------

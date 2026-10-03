@@ -31,6 +31,11 @@ const PROCESSES = [
   // reading outlives a panel reload. Bounded like the alert forecast: by the
   // library that builds the command.
   { id: "weatherProc", file: "Service.qml", collects: true, builder: "weatherCommand" },
+  // BOM's severe-weather warning and district forecast, drawn by the same
+  // Weather tab. One process runs both commands in sequence; the warning
+  // command is named here and `Bom.forecastCommand` builds the other, bounded
+  // the same way in the same library.
+  { id: "bomProc", file: "Service.qml", collects: true, builder: "Bom.warningCommand" },
   { id: "notifyProc", file: "Service.qml", collects: false, builder: null },
   // The radar tiles go to disk, not into the process. What is collected is
   // curl's own report, a line per tile in a format and with paths this plugin

@@ -962,6 +962,17 @@ Panel {
   readonly property bool weatherFailed: root.radar ? root.radar.weatherFailed === true : false
   readonly property bool weatherLoading: root.radar ? root.radar.weatherChecking === true : false
 
+  // When the last BOM cycle answered, as a local clock time. The service
+  // stamps the pair together, so one figure stands for both warnings and the
+  // district forecast.
+  readonly property string bomUpdatedClock: {
+    if (!root.radar || !root.radar.bomAnswerTime) return ""
+    var d = new Date(root.radar.bomAnswerTime)
+    var hh = d.getHours()
+    var mm = d.getMinutes()
+    return (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm
+  }
+
   // The service keeps the reading live on its own — its cadence is gated on the
   // configured location, not on a panel, because the bar icon draws the current
   // conditions whether or not this panel is open. There is therefore no
@@ -1518,6 +1529,13 @@ Panel {
           // there is nothing to wait for either.
           loading: root.weatherLoading && root.weather === null && root.hasLocation
           failed: root.weatherFailed
+          warnings: root.radar ? root.radar.activeWarnings : []
+          bomForecast: root.radar ? root.radar.bomForecast : null
+          bomUpdated: root.bomUpdatedClock
+          onRefreshRequested: {
+            if (root.radar && root.radar.refreshWeather) Qt.callLater(root.radar.refreshWeather)
+            if (root.radar && root.radar.refreshBom) Qt.callLater(root.radar.refreshBom)
+          }
           foreground: root.bar ? root.bar.foreground : Color.foreground
           accent: Color.accent
         }

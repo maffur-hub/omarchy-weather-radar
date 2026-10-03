@@ -25,6 +25,19 @@ Column {
   property color foreground: "#ffffff"
   property color accent: "#7aa2f7"
 
+  // The Bureau's warnings for the districts this location sits in, the Bureau's
+  // own daily paragraphs, and when that second answer was fetched. All three
+  // arrive from the service; this draws them or leaves them out, and never
+  // asks for them itself. The clock is the service's fetch time, not the
+  // Open-Meteo one the header already carries, so the two can be told apart.
+  property var warnings: []
+  property var bomForecast: null
+  property string bomUpdated: ""
+
+  // The refresh control asks the service to try the Bureau again; the answer
+  // arrives back through the properties above.
+  signal refreshRequested()
+
   spacing: Style.space(8)
 
   readonly property bool hasData: weather !== null
@@ -37,6 +50,7 @@ Column {
   readonly property var hourlyHistory: (hasData && weather.rain && weather.rain.hours)
     ? weather.rain.hours : []
   property bool showHourlyHistory: false
+  property bool showWarnings: false
   property int expandedDay: -1
 
   // JSON's null is not a number, and JavaScript's isFinite() cannot tell the
@@ -58,6 +72,31 @@ Column {
     var text = String(stamp || "")
     var marker = text.indexOf("T")
     return marker >= 0 ? text.substring(marker + 1) : ""
+  }
+
+  // The warnings arrive as a list the service has already narrowed to this
+  // location, but the property can still be absent, so the count is asked of
+  // the property rather than read from it directly.
+  function warningCount() { return root.warnings ? root.warnings.length : 0 }
+
+  // A warning's expiry is a whole ISO instant in the location's own zone —
+  // "2026-10-03T15:43:00+10:00" — where the row wants only the hour and
+  // minute. clockOf keeps the offset, so the seconds are trimmed here; a
+  // stamp that did not parse stays as it came rather than being cut blindly.
+  function warningClock(stamp) {
+    var t = clockOf(stamp)
+    return t.length >= 5 ? t.substring(0, 5) : t
+  }
+
+  // The Bureau's own paragraph for a day, matched to the Open-Meteo row by
+  // date. It is longer and human-written where the Open-Meteo row is a short
+  // code description, so it earns the room the dropdown already has.
+  function bomTextFor(day) {
+    if (!root.bomForecast || !root.bomForecast.days || !day) return ""
+    for (var i = 0; i < root.bomForecast.days.length; i++) {
+      if (root.bomForecast.days[i].date === day.date) return root.bomForecast.days[i].text || ""
+    }
+    return ""
   }
 
   function dayRange(day) {
@@ -100,11 +139,15 @@ Column {
   }
 
   // Where this is for and when it was asked. Only ever shown over a forecast
-  // — see the placeholder below for the other half.
+  // — see the placeholder below for the other half. The Bureau's own fetch is
+  // a second, slower answer than Open-Meteo's, so its clock is appended as its
+  // own labelled bite rather than folded into the "updated" one, which would
+  // claim both answers arrived together.
   readonly property string headerStatus: {
     var bits = []
     if (locationName !== "") bits.push(locationName)
     if (updatedClock !== "") bits.push("updated " + updatedClock)
+    if (bomUpdated !== "") bits.push("BOM " + bomUpdated)
     return bits.join(" · ")
   }
 
@@ -198,7 +241,7 @@ Column {
     Text {
       visible: root.hasData
       textFormat: Text.PlainText
-      width: parent.width - (weatherTitle.width + parent.spacing * 2)
+      width: parent.width - (weatherTitle.width + refreshButton.width + parent.spacing * 2)
       text: root.headerStatus
       color: root.foreground
       font.family: Style.font.family
@@ -211,13 +254,173 @@ Column {
     Text {
       visible: !root.hasData
       textFormat: Text.PlainText
-      width: parent.width - (weatherTitle.width + parent.spacing * 2)
+      width: parent.width - (weatherTitle.width + refreshButton.width + parent.spacing * 2)
       text: root.loading ? "Loading forecast…" : (root.failed ? "Forecast unavailable" : "No forecast")
       color: root.accent
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
       elide: Text.ElideRight
       anchors.verticalCenter: parent.verticalCenter
+    }
+
+    // The refresh control: one glyph at the right end of the header, so a
+    // second row is not spent on a single action. It asks the service to try
+    // the Bureau again, and the new timestamp appears in the status beside it.
+    Item {
+      id: refreshButton
+      width: refreshGlyph.implicitWidth
+      height: refreshGlyph.implicitHeight
+      anchors.verticalCenter: parent.verticalCenter
+
+      Text {
+        id: refreshGlyph
+        textFormat: Text.PlainText
+        text: "⟳"
+        color: root.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        opacity: 0.5
+      }
+
+      MouseArea {
+        anchors.fill: parent
+        cursorShape: Qt.PointingHandCursor
+        onClicked: root.refreshRequested()
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Warnings
+  // ---------------------------------------------------------------------------
+
+  // What the Bureau has issued for this location's districts, as one strip
+  // between the header and the present conditions — a line the eye lands on
+  // before the temperature. Collapsed until asked to open, because a warning
+  // is a sentence rather than a reading: at rest it shows the first title and
+  // how many more there are, and unfolds into each warning's own lines. The
+  // long advice paragraph is left out on purpose; it is written for a
+  // notification and would push the forecast off the bottom of a panel this
+  // narrow. The field stays on the object for whoever wants it.
+  Column {
+    id: warningStrip
+    visible: root.warningCount() > 0
+    width: parent.width
+    spacing: Style.space(2)
+
+    Item {
+      id: warningSummary
+      width: parent.width
+      height: Style.space(20)
+
+      Row {
+        id: warningHead
+        anchors.left: parent.left
+        anchors.right: warningMore.left
+        anchors.rightMargin: Style.space(6)
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(6)
+
+        Text {
+          id: warningGlyph
+          textFormat: Text.PlainText
+          text: Weather.iconForCode(95, false)
+          color: root.accent
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          anchors.verticalCenter: parent.verticalCenter
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          width: warningHead.width - (warningGlyph.width + warningHead.spacing)
+          anchors.verticalCenter: parent.verticalCenter
+          elide: Text.ElideRight
+          text: root.warnings[0] ? (root.warnings[0].title || "") : ""
+          color: root.accent
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+        }
+      }
+
+      // How many warnings the strip is holding back, and which way the click
+      // will turn it; the two share one right-aligned label so the row keeps a
+      // single anchor.
+      Text {
+        id: warningMore
+        textFormat: Text.PlainText
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        text: (root.warningCount() > 1 ? "+" + (root.warningCount() - 1) + " more " : "")
+          + (root.showWarnings ? "▾" : "▸")
+        color: root.accent
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        opacity: 0.85
+      }
+
+      MouseArea {
+        anchors.fill: parent
+        cursorShape: Qt.PointingHandCursor
+        onClicked: root.showWarnings = !root.showWarnings
+      }
+    }
+
+    Repeater {
+      model: root.showWarnings ? root.warnings : []
+
+      delegate: Column {
+        width: parent.width
+        spacing: Style.space(1)
+
+        Text {
+          textFormat: Text.PlainText
+          width: parent.width
+          wrapMode: Text.WordWrap
+          text: modelData.title || ""
+          visible: text !== ""
+          color: root.accent
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          width: parent.width
+          wrapMode: Text.WordWrap
+          text: modelData.phenomena || ""
+          visible: text !== ""
+          color: root.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          opacity: 0.75
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          width: parent.width
+          wrapMode: Text.WordWrap
+          text: (modelData.areas && modelData.areas.length > 0)
+            ? "For " + modelData.areas.join(", ") : ""
+          visible: text !== ""
+          color: root.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          opacity: 0.65
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          width: parent.width
+          text: modelData.expiresAt ? "until " + root.warningClock(modelData.expiresAt) : ""
+          visible: text !== ""
+          color: root.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          opacity: 0.65
+        }
+      }
     }
   }
 
@@ -703,6 +906,25 @@ Column {
             elide: Text.ElideRight
             topPadding: Style.space(2)
             bottomPadding: Style.space(2)
+          }
+
+          // The Bureau's paragraph for this day, where it has one. It is longer
+          // than the Open-Meteo description the row is built from, so it wraps
+          // rather than elides — the cell was opened for exactly this, and a
+          // sentence cut in the middle says less than no sentence. It covers
+          // fewer days than the row list, so a day past its last simply has no
+          // line here.
+          Text {
+            textFormat: Text.PlainText
+            visible: dayCell.expanded && text !== ""
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: root.bomTextFor(modelData)
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            opacity: 0.55
+            topPadding: Style.space(2)
           }
         }
 
