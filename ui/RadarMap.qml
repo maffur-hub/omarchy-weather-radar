@@ -63,12 +63,12 @@ Item {
   property bool lightningOnLatestFrame: true
 
   // The satellite picture layer. Drawn under the radar, like a base map with
-  // clouds in it: a live geostationary full-disk layer where one reaches the
-  // view, otherwise a stack of polar true-colour sensors composited so each
-  // one's missing swaths fall through to the next. See SatelliteLayer.
+  // clouds in it: a stack of polar true-colour sensors over the live
+  // geostationary full disk, composited so each layer's missing swaths fall
+  // through to the next, and finally to the live picture. See SatelliteLayer.
   property bool satelliteEnabled: false
-  property var satelliteLayers: []             // [{ sensor, maxZoom, mask }]
-  property var satelliteTileUrlFor: null       // function(sensor, zoom, x, y)
+  property var satelliteLayers: []             // [{ sensor, time, maxZoom, mask }]
+  property var satelliteTileUrlFor: null       // function(sensor, time, zoom, x, y)
   property int satelliteRevision: 0
 
   // The wind and pressure analysis drawn over everything. `overlayPoints` is
@@ -214,6 +214,7 @@ Item {
         centerLongitude: root.centerLongitude
         zoom: root.zoom
         sensor: modelData.sensor
+        time: modelData.time
         sourceZoom: Math.min(root.zoom, modelData.maxZoom)
         maskBlack: modelData.mask
         satelliteTileUrlFor: root.satelliteEnabled ? root.satelliteTileUrlFor : null

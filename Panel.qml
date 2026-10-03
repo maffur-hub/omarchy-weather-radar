@@ -694,14 +694,13 @@ Panel {
     return RadarModel.lightningTileUrl(z, x, y, span.from, span.to)
   }
 
-  // The satellite overlay: a live geostationary layer when one covers the
-  // view, the polar composite otherwise. Which sensor, and which Himawari band
-  // day or night, depends on where the map is looking and whether the Sun is
-  // up there. The view moves continuously while someone drags the map, so the
-  // choice is deliberately not a binding on it: it is recomputed on the same
-  // minute timer that repoints the frames, and the layer stack is rebuilt only
-  // when the chosen layer actually changes. Ten minutes of geostationary lag
-  // is smaller than the delay before a switch could matter.
+  // The satellite overlay: the sharp polar true-colour composite over the live
+  // geostationary picture when one covers the view. The view moves continuously
+  // while someone drags the map, so the choice is deliberately not a binding on
+  // it: it is recomputed on the same minute timer that repoints the frames, and
+  // the layer stack is rebuilt only when the chosen layers actually change.
+  // Ten minutes of geostationary lag is smaller than the delay before a switch
+  // could matter.
   property int satelliteEpoch: 0
   property string satelliteSelection: ""
   property var satelliteLayers: []
@@ -709,8 +708,11 @@ Panel {
   function refreshSatellite() {
     root.satelliteEpoch++
     var daytime = Solar.isDaytime(root.viewLatitude, root.viewLongitude, Date.now())
-    var layers = Overlay.satelliteLayers(root.viewLatitude, root.viewLongitude, daytime)
-    var selection = layers.map(function(layer) { return layer.sensor }).join(",")
+    // The previous UTC day's polar composite is complete, so it is the layer
+    // that fills the swath gaps the still-arriving current day cannot.
+    var fillDate = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
+    var layers = Overlay.satelliteLayers(root.viewLatitude, root.viewLongitude, daytime, fillDate)
+    var selection = layers.map(function(layer) { return layer.sensor + "@" + layer.time }).join(",")
     if (selection === root.satelliteSelection) return
     root.satelliteSelection = selection
     root.satelliteLayers = layers
@@ -718,9 +720,9 @@ Panel {
 
   // The frame cache-buster: the URL changes when the ten-minute bucket does,
   // which is how an open map fetches the next geostationary frame rather than
-  // a cached one. Polar layers ignore it.
-  function satelliteTileUrlFor(sensor, z, x, y) {
-    return Overlay.satelliteTileUrlFor(sensor, z, x, y, Math.floor(Date.now() / 600000))
+  // a cached one. Dated polar layers ignore it.
+  function satelliteTileUrlFor(sensor, time, z, x, y) {
+    return Overlay.satelliteTileUrlFor(sensor, time, z, x, y, Math.floor(Date.now() / 600000))
   }
 
   // The geostationary frame and the terminator both turn slowly; a minute is

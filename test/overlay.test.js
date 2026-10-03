@@ -183,32 +183,51 @@ test("every composite sensor is a GIBS Web Mercator request", () => {
   assert.ok(Overlay.SATELLITE_SENSORS.length >= 2, "the composite needs more than one sensor")
   for (const sensor of Overlay.SATELLITE_SENSORS) {
     assert.match(sensor, /^[A-Za-z0-9_]+_CorrectedReflectance_TrueColor$/, sensor)
-    const url = Overlay.satelliteTileUrlFor(sensor, 7, 117, 77)
+    const url = Overlay.satelliteTileUrlFor(sensor, "default", 7, 117, 77)
     assert.strictEqual(url,
       "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/" + sensor
       + "/default/default/GoogleMapsCompatible_Level9/7/77/117.jpeg")
+    // A fixed day draws from that day's slot instead of default.
+    const dated = Overlay.satelliteTileUrlFor(sensor, "2026-10-02", 7, 117, 77)
+    assert.strictEqual(dated,
+      "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/" + sensor
+      + "/default/2026-10-02/GoogleMapsCompatible_Level9/7/77/117.jpeg")
   }
-  assert.strictEqual(Overlay.satelliteTileUrlFor("VIIRS_SNPP_CorrectedReflectance_TrueColor", 7, 128, 0), "")
-  assert.strictEqual(Overlay.satelliteTileUrlFor("not_a_sensor", 7, 0, 0), "")
+  assert.strictEqual(Overlay.satelliteTileUrlFor("VIIRS_SNPP_CorrectedReflectance_TrueColor", "default", 7, 128, 0), "")
+  assert.strictEqual(Overlay.satelliteTileUrlFor("not_a_sensor", "default", 7, 0, 0), "")
 })
 
-test("the satellite picks the nearest geostationary disk, and day from night", () => {
-  // Australia: Himawari. Daytime is the visible band, night the clean infrared.
-  const auDay = Overlay.satelliteLayers(-25, 133, true)
-  assert.strictEqual(auDay.length, 1)
+test("the satellite stacks the polar composite over the nearest geostationary disk", () => {
+  // Australia: Himawari underneath, the polar composite above it. Daytime uses
+  // the visible band, night the clean infrared.
+  const auDay = Overlay.satelliteLayers(-25, 133, true, "2026-10-02")
   assert.strictEqual(auDay[0].sensor, "Himawari_AHI_Band3_Red_Visible_1km")
   assert.strictEqual(auDay[0].mask, false)
   assert.strictEqual(auDay[0].maxZoom, 7)
+  // The day before fills first, then today's composite sits on top.
+  const fill = auDay.slice(1, 1 + Overlay.SATELLITE_SENSORS.length)
+  const today = auDay.slice(1 + Overlay.SATELLITE_SENSORS.length)
+  assert.ok(fill.every(l => l.time === "2026-10-02" && l.mask === true), JSON.stringify(fill))
+  assert.ok(today.every(l => l.time === "default" && l.mask === true), JSON.stringify(today))
+  assert.deepStrictEqual(today.map(l => l.sensor), Overlay.SATELLITE_SENSORS)
+
   const auNight = Overlay.satelliteLayers(-25, 133, false)
   assert.strictEqual(auNight[0].sensor, "Himawari_AHI_Band13_Clean_Infrared")
   assert.strictEqual(auNight[0].maxZoom, 6)
+  // Without a fill date only the current composite is stacked.
+  assert.strictEqual(auNight.length, 1 + Overlay.SATELLITE_SENSORS.length)
+
   // The Americas.
   assert.strictEqual(Overlay.satelliteLayers(40, -74, true)[0].sensor, "GOES-East_ABI_GeoColor")
   assert.strictEqual(Overlay.satelliteLayers(34, -118, true)[0].sensor, "GOES-West_ABI_GeoColor")
-  // Europe is out of reach of every disk and falls back to the polar stack.
-  const fallback = Overlay.satelliteLayers(51, 0, true)
-  assert.ok(fallback.length > 1, JSON.stringify(fallback))
+
+  // Europe is out of reach of every disk: the polar stack alone, still in two
+  // days so the gaps fill.
+  const fallback = Overlay.satelliteLayers(51, 0, true, "2026-10-02")
+  assert.strictEqual(fallback.length, 2 * Overlay.SATELLITE_SENSORS.length)
   assert.ok(fallback.every(l => l.mask === true), JSON.stringify(fallback))
+  assert.ok(fallback.slice(0, Overlay.SATELLITE_SENSORS.length).every(l => l.time === "2026-10-02"))
+  assert.ok(fallback.slice(Overlay.SATELLITE_SENSORS.length).every(l => l.time === "default"))
 })
 
 test("the subsolar point tracks the hour and the season", () => {
@@ -223,16 +242,19 @@ test("the subsolar point tracks the hour and the season", () => {
 })
 
 test("live layers carry a frame cache-buster and polar layers do not", () => {
-  const live = Overlay.satelliteTileUrlFor("Himawari_AHI_Band3_Red_Visible_1km", 7, 117, 77, 12345)
+  const live = Overlay.satelliteTileUrlFor("Himawari_AHI_Band3_Red_Visible_1km", "default", 7, 117, 77, 12345)
   assert.strictEqual(live,
     "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Himawari_AHI_Band3_Red_Visible_1km/default/default/GoogleMapsCompatible_Level7/7/77/117.png?frame=12345")
-  const infrared = Overlay.satelliteTileUrlFor("Himawari_AHI_Band13_Clean_Infrared", 6, 55, 36, 9)
+  const infrared = Overlay.satelliteTileUrlFor("Himawari_AHI_Band13_Clean_Infrared", "default", 6, 55, 36, 9)
   assert.strictEqual(infrared,
     "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Himawari_AHI_Band13_Clean_Infrared/default/default/GoogleMapsCompatible_Level6/6/36/55.png?frame=9")
-  const polar = Overlay.satelliteTileUrlFor("MODIS_Terra_CorrectedReflectance_TrueColor", 7, 117, 77, 12345)
+  const polar = Overlay.satelliteTileUrlFor("MODIS_Terra_CorrectedReflectance_TrueColor", "default", 7, 117, 77, 12345)
   assert.strictEqual(polar,
     "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/default/GoogleMapsCompatible_Level9/7/77/117.jpeg")
-  assert.strictEqual(Overlay.satelliteTileUrlFor("not_a_sensor", 7, 0, 0, 1), "")
+  // A dated polar tile ignores the cache-buster.
+  const dated = Overlay.satelliteTileUrlFor("MODIS_Terra_CorrectedReflectance_TrueColor", "2026-10-02", 7, 117, 77, 12345)
+  assert.ok(!dated.includes("frame="), dated)
+  assert.strictEqual(Overlay.satelliteTileUrlFor("not_a_sensor", "default", 7, 0, 0, 1), "")
 })
 
 // ------------------------------------------------------------------ aurora

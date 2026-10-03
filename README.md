@@ -204,23 +204,28 @@ has coverage.
 
 The map can draw a **satellite overlay** under the radar, toggled from the
 OVERLAYS row in the panel and sourced from [NASA GIBS](https://nasa-gibs.github.io/gibs-api-docs/).
-Where a **geostationary imager** covers the view — GOES-East, GOES-West or
-Himawari-9 — it draws that imager's **live, gap-free full disk**: one picture of
-the same hemisphere, refreshed every ten minutes and typically about forty
-minutes behind real time. GOES carries **GeoColor**, true colour by day and
-multispectral infrared by night; Himawari has no true colour on GIBS, so it is
-shown as its **visible band by day and clean infrared band by night**.
+It is two pictures stacked. On top is a **true-colour composite of the polar
+MODIS and VIIRS sensors** — the sharpest imagery available, down to 250 m at
+the deepest zoom — and beneath it is a **live geostationary full disk**
+(GOES-East or West, or Himawari-9) where one covers the view, refreshed every
+ten minutes. GOES carries GeoColor, true colour by day and multispectral
+infrared by night; Himawari has no true colour on GIBS, so it is shown as its
+visible band by day and clean infrared band by night.
 
-No disk reaches Europe, Africa or the Indian Ocean, so there the overlay falls
-back to **stacked polar true-colour sensors** — MODIS Terra and Aqua and VIIRS.
-A single polar orbiter's daily composite has **gaps**: the ground it did not see
-that day is painted opaque black, which reads as a black wedge across the map.
-
-Only the polar fallback runs its tiles through a shader that makes the
+A single polar orbiter's daily composite has **gaps**: the ground it did not
+see that day is painted opaque black, which reads as a black wedge across the
+map. Every polar layer runs its tiles through a shader that makes the
 near-black gaps **transparent**, so the gaps in the layer above fall through to
-the sensor beneath, and only ground no sensor saw shows the base map. The
-compiled shader is `shaders/blackmask.frag.qsb`, rebuilt from
-`shaders/blackmask.frag` with the `qsb` command in that file's header.
+the sensor beneath. The **previous UTC day's** composite is stacked under the
+current one for the same reason: a swath the current day has not seen yet is
+filled by the day before, and anything still missing falls through to the live
+geostationary picture. The compiled shader is `shaders/blackmask.frag.qsb`,
+rebuilt from `shaders/blackmask.frag` with the `qsb` command in that file's
+header.
+
+The trade is that the true-colour layer is a daily composite rather than a live
+frame — as fresh as the last overpass, while the geostationary layer beneath it
+is current to about ten minutes.
 
 ### The base map
 

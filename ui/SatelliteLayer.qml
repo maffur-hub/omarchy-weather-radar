@@ -15,10 +15,14 @@ import QtQuick
 Item {
   id: root
 
-  // function(sensor, zoom, x, y) -> the tile's URL, "" or null. Same contract
-  // as TileLayer.tileUrlFor, with the sensor this layer carries.
+  // function(sensor, time, zoom, x, y) -> the tile's URL, "" or null. Same
+  // contract as TileLayer.tileUrlFor, with the sensor and time slot this layer
+  // carries.
   property var satelliteTileUrlFor: null
   property string sensor: ""
+  // The GIBS time slot: "default" for the current composite, or a UTC date
+  // "YYYY-MM-DD" for a fixed day, as the previous-day fill layer uses.
+  property string time: "default"
 
   property real centerLatitude: 0
   property real centerLongitude: 0
@@ -45,7 +49,7 @@ Item {
 
   function tileUrlFor(z, x, y) {
     if (!root.satelliteTileUrlFor) return ""
-    return root.satelliteTileUrlFor(root.sensor, z, x, y)
+    return root.satelliteTileUrlFor(root.sensor, root.time, z, x, y)
   }
 
   TileLayer {
