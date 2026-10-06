@@ -461,17 +461,15 @@ Panel {
   }
 
   // Where a layer loads one tile from: the service's copy on disk, or null
-  // while it is still on the way. Straight from the network only when there
-  // is nowhere safe to keep a cache.
+  // while it is still on the way. There is deliberately no remote fallback:
+  // with no cache to keep a tile in, the layer loads nothing rather than an
+  // https:// URL, which is the Qt fetch that crashes the compositor.
   function radarTileUrlForTime(time, z, x, y) {
     if (!root.radar || !root.radar.tileHost) return ""
+    if (root.radar.tileCacheState === "off") return ""
     var index = Frames.indexOfTime(root.frames, time)
     if (index < 0) return ""
     var frame = root.frames[index]
-    if (root.radar.tileCacheState === "off") {
-      return RadarModel.tileUrl(root.radar.tileHost, frame.path, 256,
-        z, x, y, root.colorSchemeId, root.smoothTiles, root.showSnow)
-    }
     var key = TileCache.tileKey(frame.time, z, x, y, root.colorSchemeId, root.smoothTiles, root.showSnow)
     return key === "" ? "" : root.radar.tileSource(key)
   }
@@ -687,11 +685,17 @@ Panel {
 
   // The archive tile. While the live dots are showing this returns "", drawing
   // nothing and fetching nothing; otherwise it is the archive at every zoom,
-  // which is also the fallback when the stream cannot run.
+  // which is also the fallback when the stream cannot run. The remote URL never
+  // reaches the Image: the service fetches it out of process, and this returns
+  // the file:// path, or "" until it is on disk.
   function lightningTileUrlFor(z, x, y) {
     if (root.lightningLive) return ""
+    if (!root.radar) return ""
     var span = root.lightningWindow
-    return RadarModel.lightningTileUrl(z, x, y, span.from, span.to)
+    var job = RadarModel.lightningTileJob(z, x, y, span.from, span.to)
+    if (!job) return ""
+    root.radar.wantImage(job.key, job.url)
+    return root.radar.imageSource(job.key)
   }
 
   // The satellite overlay: the sharp polar true-colour composite over the live
@@ -720,9 +724,16 @@ Panel {
 
   // The frame cache-buster: the URL changes when the ten-minute bucket does,
   // which is how an open map fetches the next geostationary frame rather than
-  // a cached one. Dated polar layers ignore it.
+  // a cached one, and the cache key carries it too so Qt cannot serve the frame
+  // before it. Dated polar layers ignore it. The remote URL never reaches the
+  // Image: the service fetches it out of process and this returns the file://
+  // path, or "" until it is on disk.
   function satelliteTileUrlFor(sensor, time, z, x, y) {
-    return Overlay.satelliteTileUrlFor(sensor, time, z, x, y, Math.floor(Date.now() / 600000))
+    if (!root.radar) return ""
+    var job = Overlay.satelliteTileJob(sensor, time, z, x, y, Math.floor(Date.now() / 600000))
+    if (!job) return ""
+    root.radar.wantImage(job.key, job.url)
+    return root.radar.imageSource(job.key)
   }
 
   // The geostationary frame and the terminator both turn slowly; a minute is
@@ -1246,15 +1257,20 @@ Panel {
   // answerable: fetch the mask centred on the user and read the middle pixel,
   // which is their location by construction.
   //
-  // The probe is mounted in the panel's tree rather than in the service
-  // because reading pixels needs a scene to render into, and a headless
-  // singleton has none. See ui/CoverageProbe.qml.
+  // The mask is fetched by the service out of process, like every other remote
+  // image, and the probe is handed a file:// path — never the RainViewer URL.
+  // The probe is mounted in the panel's tree rather than in the service because
+  // reading pixels needs a scene to render into, and a headless singleton has
+  // none. See ui/CoverageProbe.qml.
 
-  readonly property string coverageProbeUrl: {
+  readonly property string coverageProbeSource: {
     if (!radar || !radar.tileHost || !hasLocation) return ""
     if (radar.coverageChecked) return ""
-    return RadarModel.coverageTileUrl(radar.tileHost, 256, RadarModel.MAX_RADAR_ZOOM,
-      homeLatitude, homeLongitude)
+    var unused = radar.imageRevision
+    var job = RadarModel.coverageTileJob(radar.tileHost, homeLatitude, homeLongitude)
+    if (!job) return ""
+    radar.wantImage(job.key, job.url)
+    return radar.imageSource(job.key)
   }
 
   readonly property bool coverageMissing: radar ? (radar.coverageChecked && !radar.hasCoverage) : false
@@ -1382,7 +1398,9 @@ Panel {
 
           lightningEnabled: root.showLightning
           lightningTileUrlFor: root.lightningTileUrlFor
-          lightningEpoch: root.lightningEpoch
+          // The image cache's revision is folded in so a lightning tile that
+          // lands repoints the layer from "" to its file:// path.
+          lightningEpoch: root.lightningEpoch + ":" + (radar ? radar.imageRevision : 0)
           lightningOnLatestFrame: root.isLatestFrame
           lightningStrikes: root.lightningStrikes
           lightningStrikesRevision: root.lightningStrikesRevision
@@ -1391,7 +1409,9 @@ Panel {
           satelliteEnabled: root.showSatellite
           satelliteLayers: root.satelliteLayers
           satelliteTileUrlFor: root.satelliteTileUrlFor
-          satelliteRevision: root.satelliteEpoch
+          // The image cache's revision is folded in so a satellite tile that
+          // lands repoints the layer from "" to its file:// path.
+          satelliteRevision: root.satelliteEpoch + ":" + (radar ? radar.imageRevision : 0)
 
           windEnabled: root.showWind
           synopticEnabled: root.showSynoptic
@@ -1450,7 +1470,7 @@ Panel {
 
           CoverageProbe {
             id: coverageProbe
-            source: root.coverageProbeUrl
+            source: root.coverageProbeSource
             onResolved: function(covered) {
               if (root.radar && root.radar.reportCoverage) root.radar.reportCoverage(covered)
               if (!covered) console.log("weather-radar: no ground radar reaches the configured location")

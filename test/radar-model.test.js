@@ -1,6 +1,6 @@
 const { test } = require("node:test")
 const assert = require("node:assert")
-const { RadarModel } = require("./load.js")
+const { RadarModel, ImageCache } = require("./load.js")
 
 // ------------------------------------------------------------------ constants
 
@@ -88,6 +88,39 @@ test("the real-time lightning layer is used only when zoomed in", () => {
   assert.strictEqual(RadarModel.lightningLiveAt(6), true)
   assert.strictEqual(RadarModel.lightningLiveAt(9), true)
   assert.strictEqual(RadarModel.lightningLiveAt(6.5), false)
+})
+
+test("a lightning job carries its URL and a cache key bucketed in seconds", () => {
+  const from = Date.UTC(2026, 9, 3, 5, 0, 0)
+  const to = Date.UTC(2026, 9, 3, 7, 0, 0)
+  const job = RadarModel.lightningTileJob(7, 117, 77, from, to)
+  assert.strictEqual(job.key, "lgt/7/117/77/1791003600_1791010800")
+  assert.strictEqual(job.url, RadarModel.lightningTileUrl(7, 117, 77, from, to))
+  assert.strictEqual(ImageCache.isImageKey(job.key), true)
+  assert.strictEqual(ImageCache.isImageUrl(job.url), true)
+
+  // A coordinate off the grid or a window that is not a real pair is no job.
+  assert.strictEqual(RadarModel.lightningTileJob(-1, 0, 0, from, to), null)
+  assert.strictEqual(RadarModel.lightningTileJob(7, 128, 0, from, to), null)
+  assert.strictEqual(RadarModel.lightningTileJob(7, 0, 0, to, from), null)
+  assert.strictEqual(RadarModel.lightningTileJob(7, 0, 0, 0, to), null)
+})
+
+test("a coverage job is the one mask per place, keyed by the place", () => {
+  const job = RadarModel.coverageTileJob("https://tilecache.rainviewer.com", -23.5505, -46.6333)
+  assert.strictEqual(job.key, "cov/-23.5505/-46.6333")
+  assert.strictEqual(job.url,
+    "https://tilecache.rainviewer.com/v2/coverage/0/256/7/-23.5505/-46.6333/0/0_0.png")
+  assert.strictEqual(ImageCache.isImageKey(job.key), true)
+  assert.strictEqual(ImageCache.isImageUrl(job.url), true)
+
+  // Only a tile host the manifest has already validated, and only a real
+  // coordinate, becomes a job.
+  assert.strictEqual(RadarModel.coverageTileJob("http://elsewhere", -23, -46), null)
+  assert.strictEqual(RadarModel.coverageTileJob("", -23, -46), null)
+  assert.strictEqual(RadarModel.coverageTileJob("https://h", 91, -46), null)
+  assert.strictEqual(RadarModel.coverageTileJob("https://h", -23, 181), null)
+  assert.strictEqual(RadarModel.coverageTileJob("https://h", NaN, -46), null)
 })
 
 test("a geocoding query is escaped rather than pasted into the URL", () => {

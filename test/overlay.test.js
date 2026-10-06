@@ -1,8 +1,8 @@
 const { test } = require("node:test")
 const assert = require("node:assert")
-const { loadLibrary, TileMath, RadarModel, Solar } = require("./load.js")
+const { loadLibrary, TileMath, RadarModel, Solar, ImageCache } = require("./load.js")
 
-const Overlay = loadLibrary("Overlay.js", { RadarModel, TileMath, Solar })
+const Overlay = loadLibrary("Overlay.js", { RadarModel, TileMath, Solar, ImageCache })
 
 // ------------------------------------------------------------------- grid
 
@@ -255,6 +255,54 @@ test("live layers carry a frame cache-buster and polar layers do not", () => {
   const dated = Overlay.satelliteTileUrlFor("MODIS_Terra_CorrectedReflectance_TrueColor", "2026-10-02", 7, 117, 77, 12345)
   assert.ok(!dated.includes("frame="), dated)
   assert.strictEqual(Overlay.satelliteTileUrlFor("not_a_sensor", "default", 7, 0, 0, 1), "")
+})
+
+test("a satellite job carries the URL and a key safe for the cache", () => {
+  const job = Overlay.satelliteTileJob("MODIS_Terra_CorrectedReflectance_TrueColor", "default", 7, 117, 77)
+  assert.strictEqual(job.key, "sat/MODIS_Terra_CorrectedReflectance_TrueColor/default/0/7/117/77")
+  assert.strictEqual(job.url,
+    "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor"
+    + "/default/default/GoogleMapsCompatible_Level9/7/77/117.jpeg")
+  // The born-valid key is one the cache will accept.
+  assert.strictEqual(ImageCache.isImageKey(job.key), true)
+  assert.strictEqual(ImageCache.isImageUrl(job.url), true)
+})
+
+test("a live satellite job folds the frame cache-buster into its key", () => {
+  // A live layer's URL is otherwise identical, so Qt would answer a new frame
+  // from the frame before it; the key has to move with the buster as well.
+  const first = Overlay.satelliteTileJob("Himawari_AHI_Band3_Red_Visible_1km", "default", 7, 117, 77, 12345)
+  const second = Overlay.satelliteTileJob("Himawari_AHI_Band3_Red_Visible_1km", "default", 7, 117, 77, 12346)
+  assert.strictEqual(first.key, "sat/Himawari_AHI_Band3_Red_Visible_1km/default/12345/7/117/77")
+  assert.ok(first.key !== second.key, "a new ten-minute frame reused the old key")
+  assert.ok(first.url.includes("frame=12345"), first.url)
+
+  // A dated polar tile ignores the buster, so it belongs nowhere in its key:
+  // otherwise the same immutable tile would be fetched again every ten minutes.
+  const dated = Overlay.satelliteTileJob("MODIS_Terra_CorrectedReflectance_TrueColor", "2026-10-02", 7, 117, 77, 12345)
+  assert.strictEqual(dated.key, "sat/MODIS_Terra_CorrectedReflectance_TrueColor/2026-10-02/0/7/117/77")
+  assert.ok(!dated.url.includes("frame="), dated.url)
+})
+
+test("a satellite job refuses a sensor, slot or coordinate it cannot vouch for", () => {
+  assert.strictEqual(Overlay.satelliteTileJob("not_a_sensor", "default", 7, 0, 0, 1), null)
+  assert.strictEqual(Overlay.satelliteTileJob("MODIS_Terra_CorrectedReflectance_TrueColor", "default", 7, 128, 0), null)
+  // A live layer with no usable buster is no job, rather than a key that would
+  // collide with the frame before it.
+  assert.strictEqual(Overlay.satelliteTileJob("Himawari_AHI_Band3_Red_Visible_1km", "default", 7, 117, 77), null)
+  assert.strictEqual(Overlay.satelliteTileJob("Himawari_AHI_Band3_Red_Visible_1km", "default", 7, 117, 77, -1), null)
+})
+
+test("a hyphenated geostationary sensor is still a job", () => {
+  // GOES-East and GOES-West carry a hyphen in the sensor name; a key builder
+  // that refused it would silently never load the live disk over the Americas,
+  // which is exactly the layer the geostationary branch exists for.
+  for (const sensor of ["GOES-East_ABI_GeoColor", "GOES-West_ABI_GeoColor"]) {
+    const job = Overlay.satelliteTileJob(sensor, "default", 7, 117, 77, 12345)
+    assert.ok(job, `${sensor} produced no job`)
+    assert.strictEqual(ImageCache.isImageKey(job.key), true, job.key)
+    assert.ok(job.key.startsWith("sat/" + sensor + "/"), job.key)
+  }
 })
 
 // ------------------------------------------------------------------ aurora

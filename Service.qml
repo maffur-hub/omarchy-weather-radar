@@ -5,6 +5,7 @@ import "lib/Glyphs.js" as Glyphs
 import "lib/Alerts.js" as Alerts
 import "lib/Basemap.js" as Basemap
 import "lib/Bom.js" as Bom
+import "lib/ImageCache.js" as ImageCache
 import "lib/RadarModel.js" as RadarModel
 import "lib/Settings.js" as Settings
 import "lib/Solar.js" as Solar
@@ -247,6 +248,9 @@ Item {
     // The cache is emptied while the frame list is being asked for, rather
     // than after it answers.
     if (tileCacheState === "cold") clearTileCache()
+    // The image cache is emptied the same way, so a file left by a session that
+    // died mid-transfer is never taken on trust.
+    if (imageCacheState === "cold") clearImageCache()
   }
 
   // `owner` names the map letting go, so that its tile requests go with it.
@@ -255,8 +259,12 @@ Item {
     if (owner !== undefined) delete tileWants[owner]
     // Nobody is looking, so nothing still queued is worth fetching. What is
     // already on disk stays for the next time the map opens.
-    if (frameConsumers === 0) tileWants = ({})
+    if (frameConsumers === 0) {
+      tileWants = ({})
+      imageWants = ({})
+    }
     rebuildTileQueue()
+    rebuildImageQueue()
     scheduleManifestCheck()
   }
 
@@ -729,9 +737,13 @@ Item {
   property int tileBatchTimeoutMs: 90000
   property int tileClearTimeoutMs: 30000
   property int manifestTimeoutMs: 30000
+  property int imageBatchTimeoutMs: 90000
+  property int imageClearTimeoutMs: 30000
   property int batchBeats: 0
   property int clearBeats: 0
   property int manifestBeats: 0
+  property int imageBatchBeats: 0
+  property int imageClearBeats: 0
 
   // The heartbeat of an open map, every five seconds. It is where everything
   // that could otherwise wait for ever is looked at again:
@@ -744,6 +756,8 @@ Item {
   //  - a rate limit that has run out is lifted, and failed tiles whose retry
   //    is due are queued again. The service also wakes for these at the
   //    moment they are due; this is the net under that.
+  //  - the same for the overlay images, and their time-bucketed keys are
+  //    pruned as their moment passes.
   Timer {
     id: tileHeartbeat
     interval: 5000
@@ -764,6 +778,19 @@ Item {
         root.clearBeats = 0
         tileCleanProc.running = false
       }
+      if (imageFetchProc.running) root.imageBatchBeats++
+      if (root.imageBatchBeats * beat > root.imageBatchTimeoutMs) {
+        console.warn("weather-radar: an image batch ran for over " + Math.round(root.imageBatchTimeoutMs / 1000)
+          + " s and was stopped")
+        root.imageBatchBeats = 0
+        imageFetchProc.running = false
+      }
+      if (imageCleanProc.running) root.imageClearBeats++
+      if (root.imageClearBeats * beat > root.imageClearTimeoutMs) {
+        console.warn("weather-radar: clearing the image cache hung and was stopped")
+        root.imageClearBeats = 0
+        imageCleanProc.running = false
+      }
       if (manifestProc.running) root.manifestBeats++
       if (root.manifestBeats * beat > root.manifestTimeoutMs) {
         console.warn("weather-radar: a request for the frame list hung and was stopped")
@@ -777,6 +804,8 @@ Item {
         if (!manifestProc.running) root.scheduleManifestCheck()
       }
       root.reviveDueTiles()
+      root.evictStaleImages()
+      root.reviveDueImages()
     }
   }
 
@@ -887,6 +916,337 @@ Item {
       root.runTileDeletes()
       root.pumpTiles()
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Overlay images
+  // ---------------------------------------------------------------------------
+
+  // The satellite, lightning and coverage rasters, kept on disk and fetched out
+  // of process for the same reason the radar tiles are. Qt loading an https://
+  // image in this process is the crash this whole pipeline exists to prevent —
+  // see lib/ImageCache.js — so no remote URL ever reaches an Image.source or a
+  // Canvas.loadImage: the layers ask by cache key and load a file:// path.
+  //
+  // Owned here rather than in a panel for the same reason as the tiles: two
+  // monitors showing the map want the same files, and what is on disk is known
+  // only from this session's own fetches. The cache is emptied the first time
+  // the map opens, so a file left by a session that died mid-transfer is never
+  // taken on trust.
+  readonly property string imageCacheDir: ImageCache.cacheDir(Quickshell.env("HOME"),
+    Quickshell.env("XDG_CACHE_HOME"))
+
+  // "cold" until the map first opens, "clearing" while the old cache is
+  // removed, then "ready". "off" when there is nowhere safe to keep one, in
+  // which case no image is fetched and the overlays simply do not draw.
+  property string imageCacheState: imageCacheDir === "" ? "off" : "cold"
+
+  // Bumped whenever an image arrives, fails or leaves, so the layer bindings
+  // that asked where an image is ask again.
+  property int imageRevision: 0
+  property var imagesOnDisk: ({})
+  property int imagesOnDiskCount: 0
+  property int maxImagesOnDisk: ImageCache.MAX_IMAGES_ON_DISK
+  property var imagesInFlight: ({})
+  property var imageRetries: ({})
+  property var imageQueue: []
+
+  // What the map on screen wants, keyed by cache key, and the same keys as a
+  // set for the wake calculation. The callers are pull-based — a tile repoints
+  // and asks for its key again — so a want is remembered here until it is on
+  // disk, and pruned when its time bucket passes.
+  property var imageWants: ({})
+  property var wantedImageKeys: ({})
+  property var imagesToDelete: []
+
+  // Where an image is loaded from: its file once it is on disk, "" otherwise.
+  // "" draws nothing and asks Qt for nothing, which is the only safe answer
+  // while the fetch is still out of process.
+  function imageSource(key) {
+    var unused = imageRevision
+    return ImageCache.imageSourceFor("file://" + imageCacheDir + "/" + key, imagesOnDisk[key] === true)
+  }
+
+  // Idempotent, because the panel calls this while a source binding evaluates,
+  // which happens many times a second during a pan. Only a key not already
+  // wanted, queued, in flight or on disk causes any work.
+  function wantImage(key, url) {
+    if (imageCacheState === "off") return
+    if (!ImageCache.isImageKey(key) || !ImageCache.isImageUrl(url)) return
+    if (imageWants[key] !== url) imageWants[key] = url
+    if (imagesOnDisk[key] || imagesInFlight[key]) return
+    if (TileCache.isWaiting(imageRetries[key], Date.now())) return
+    for (var i = 0; i < imageQueue.length; i++) {
+      if (imageQueue[i].key === key) return
+    }
+    rebuildImageQueue()
+  }
+
+  // The queue is rebuilt from the wants rather than appended to, so a key asked
+  // for twice stays in one place and nothing already on disk is fetched again.
+  function rebuildImageQueue() {
+    var wanted = {}
+    var queue = []
+    var now = Date.now()
+    for (var key in imageWants) {
+      wanted[key] = true
+      if (imagesOnDisk[key] || imagesInFlight[key]) continue
+      if (TileCache.isWaiting(imageRetries[key], now)) continue
+      queue.push({ key: key, url: imageWants[key] })
+    }
+    wantedImageKeys = wanted
+    imageQueue = queue
+    pumpImages()
+    scheduleImageWake()
+  }
+
+  function pumpImages() {
+    if (imageCacheState === "cold") {
+      clearImageCache()
+      return
+    }
+    // No map open means nobody is looking, so nothing is worth fetching.
+    if (frameConsumers === 0) return
+    if (imageCacheState !== "ready" || imageFetchProc.running || imageQueue.length === 0) return
+
+    var batch = imageQueue.slice(0, ImageCache.BATCH_SIZE)
+    imageQueue = imageQueue.slice(ImageCache.BATCH_SIZE)
+    var command = ImageCache.fetchCommand(imageCacheDir, batch)
+    if (command.length === 0) {
+      // Nothing in it could be fetched. Its images are failures like any other,
+      // rather than dropped from the queue with nothing to bring them back.
+      applyImageReport(batch, "")
+      return
+    }
+    for (var i = 0; i < batch.length; i++) imagesInFlight[batch[i].key] = true
+    imageFetchProc.jobs = batch
+    imageFetchProc.answered = false
+    imageFetchProc.command = command
+    imageBatchBeats = 0
+    imageFetchProc.running = true
+  }
+
+  Process {
+    id: imageFetchProc
+
+    // See tileFetchProc: a fork that never happened is answered too, or the
+    // images it held stay in flight for the rest of the session.
+    property bool answered: false
+    property var jobs: []
+
+    onExited: function(exitCode) {
+      answered = true
+      root.applyImageReport(jobs, imageReport.text)
+    }
+    onRunningChanged: if (!running && !answered) root.applyImageReport(jobs, "")
+
+    // curl's report, one short line per image, in a format and with paths this
+    // plugin chose; nothing the server sends reaches it.
+    stdout: StdioCollector { id: imageReport; waitForEnd: true }
+  }
+
+  function applyImageReport(jobs, text) {
+    var result = ImageCache.parseFetchReport(text, imageCacheDir, jobs)
+
+    for (var i = 0; i < jobs.length; i++) delete imagesInFlight[jobs[i].key]
+
+    // Nowhere to write, a full disk or a directory that cannot be made: the
+    // cache is given up for the session, and the overlays stop drawing rather
+    // than loading a remote URL as a fallback. There is deliberately no remote
+    // fallback; that is the crash.
+    if (result.cannotWrite) {
+      console.warn("weather-radar: cannot write the image cache in " + imageCacheDir
+        + "; overlay images are off for this session")
+      imageCacheState = "off"
+      imageQueue = []
+      imageRevision++
+      return
+    }
+
+    for (var a = 0; a < result.arrived.length; a++) {
+      var key = result.arrived[a]
+      if (!imagesOnDisk[key]) imagesOnDiskCount++
+      imagesOnDisk[key] = true
+      delete imageRetries[key]
+    }
+
+    var now = Date.now()
+    // Nothing in the batch arrived: whatever failed may have failed for want of
+    // a network rather than for anything about the image itself.
+    var outage = result.arrived.length === 0
+    for (var b = 0; b < result.failed.length; b++) {
+      var failed = result.failed[b]
+      var attempts = (imageRetries[failed.key] ? imageRetries[failed.key].attempts : 0) + 1
+      imageRetries[failed.key] = {
+        at: now + TileCache.retryDelayMs(attempts, failed.status),
+        attempts: attempts,
+        status: failed.status,
+        outage: outage
+      }
+    }
+    if (result.failed.length > 0) {
+      var named = result.failed.slice(0, 4).map(function(f) { return f.status + " " + f.key })
+      console.warn("weather-radar: " + result.failed.length + " of " + jobs.length
+        + " images failed: " + named.join(", ") + (result.failed.length > 4 ? ", ..." : ""))
+    }
+
+    // An image arriving is the network working. Images that failed in a batch
+    // where nothing answered are asked for again now, rather than each waiting
+    // out its own delay.
+    var revived = false
+    if (result.arrived.length > 0) {
+      for (var key2 in imageRetries) {
+        if (imageRetries[key2].status !== 0 || imageRetries[key2].outage !== true) continue
+        delete imageRetries[key2]
+        revived = true
+      }
+    }
+
+    imageRevision++
+    if (imagesOnDiskCount > maxImagesOnDisk) {
+      startImageCacheOver()
+      return
+    }
+    runImageDeletes()
+    if (revived) rebuildImageQueue()
+    else pumpImages()
+    scheduleImageWake()
+  }
+
+  // Wakes when the next wanted image's retry runs out, so a five-second retry
+  // takes five seconds and not up to the next heartbeat.
+  function scheduleImageWake() {
+    var now = Date.now()
+    var at = ImageCache.nextImageWake(imageRetries, wantedImageKeys, now)
+    if (at === 0 || frameConsumers === 0) {
+      imageWakeTimer.stop()
+      imageWakeAt = 0
+      return
+    }
+    imageWakeTimer.interval = Math.max(50, at - now + 50)
+    imageWakeTimer.restart()
+    imageWakeAt = now + imageWakeTimer.interval
+  }
+
+  property real imageWakeAt: 0
+
+  Timer {
+    id: imageWakeTimer
+    repeat: false
+    onTriggered: root.reviveDueImages()
+  }
+
+  // Queues again the wanted images whose retry is due.
+  function reviveDueImages() {
+    if (imageCacheState !== "ready") return
+    var now = Date.now()
+    var due = false
+    for (var key in imageRetries) {
+      var retry = imageRetries[key]
+      if (wantedImageKeys[key] && !retry.gaveUp && !TileCache.isHeld(retry.at, now)) { due = true; break }
+    }
+    if (due) {
+      imageRevision++
+      rebuildImageQueue()
+    } else if (imageQueue.length > 0) {
+      pumpImages()
+    }
+    scheduleImageWake()
+  }
+
+  // Past the ceiling on images, the cache is emptied and refilled with what the
+  // map on screen wants, rather than growing for as long as someone explores.
+  function startImageCacheOver() {
+    imagesOnDisk = ({})
+    imagesOnDiskCount = 0
+    imageRevision++
+    imageCacheState = "cold"
+    rebuildImageQueue()
+  }
+
+  // Keys past their time bucket — the lightning archive window and the live
+  // geostationary frames — are dropped from disk and from the wanted set, so a
+  // long session does not keep asking for frames whose moment has passed. The
+  // dated polar tiles and the coverage mask carry no bucket and are bounded by
+  // the count cap instead.
+  function evictStaleImages() {
+    var now = Date.now()
+    var changed = false
+    for (var w in imageWants) {
+      if (ImageCache.keyAgeMs(w, now) > ImageCache.IMAGE_MAX_AGE_MS) { delete imageWants[w]; changed = true }
+    }
+    for (var r in imageRetries) {
+      if (ImageCache.keyAgeMs(r, now) > ImageCache.IMAGE_MAX_AGE_MS) { delete imageRetries[r]; changed = true }
+    }
+    var stale = ImageCache.staleKeys(imagesOnDisk, now)
+    if (stale.length > 0) {
+      for (var i = 0; i < stale.length; i++) {
+        if (!imagesOnDisk[stale[i]]) continue
+        delete imagesOnDisk[stale[i]]
+        imagesOnDiskCount--
+      }
+      imagesToDelete = imagesToDelete.concat(stale)
+      changed = true
+    }
+    if (!changed) return
+    imageRevision++
+    runImageDeletes()
+    rebuildImageQueue()
+  }
+
+  // A key a batch is still writing waits for that batch, which runs this again
+  // when it ends. Deleting a file under curl can land between the transfer
+  // starting and the file being opened. `imagesInFlight` is keyed by exact key
+  // here, not by frame as the tiles are.
+  function runImageDeletes() {
+    if (imageCleanProc.running || imagesToDelete.length === 0) return
+    var now = imagesToDelete.filter(function(key) { return imagesInFlight[key] !== true })
+    imagesToDelete = imagesToDelete.filter(function(key) { return imagesInFlight[key] === true })
+    if (now.length === 0) return
+    var command = ImageCache.cleanCommand(imageCacheDir, now)
+    if (command.length === 0) return
+    imageCleanProc.command = command
+    imageClearBeats = 0
+    imageCleanProc.running = true
+  }
+
+  Process {
+    id: imageCleanProc
+
+    // Nothing is read back. A delete that failed leaves files nobody points at,
+    // and the next session's clear removes them.
+    onRunningChanged: {
+      if (running) return
+      if (root.imageClearPending) {
+        root.imageClearPending = false
+        root.clearImageCache()
+        return
+      }
+      if (root.imageCacheState === "clearing") {
+        root.imageCacheState = "ready"
+        root.rebuildImageQueue()
+        return
+      }
+      root.runImageDeletes()
+      root.pumpImages()
+    }
+  }
+
+  // Empties the cache. If a file is being deleted at that moment, the clear
+  // waits for it to finish, for the same reason the tile clear does.
+  property bool imageClearPending: false
+
+  function clearImageCache() {
+    if (imageCacheState === "off") return
+    imageCacheState = "clearing"
+    imagesToDelete = []
+    if (imageCleanProc.running) {
+      imageClearPending = true
+      return
+    }
+    imageCleanProc.command = ImageCache.cleanCommand(imageCacheDir, null)
+    imageClearBeats = 0
+    imageCleanProc.running = true
   }
 
   // ---------------------------------------------------------------------------

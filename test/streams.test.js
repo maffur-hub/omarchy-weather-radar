@@ -2,7 +2,7 @@ const { test } = require("node:test")
 const assert = require("node:assert")
 const { readFileSync, readdirSync } = require("node:fs")
 const { join } = require("node:path")
-const { RadarModel, TileCache, loadLibrary } = require("./load.js")
+const { RadarModel, TileCache, ImageCache, loadLibrary } = require("./load.js")
 
 const Strikes = loadLibrary("Strikes.js")
 
@@ -44,6 +44,11 @@ const PROCESSES = [
   // chose, so its size is set here rather than by the server.
   { id: "tileFetchProc", file: "Service.qml", collects: true, builder: "TileCache.fetchCommand" },
   { id: "tileCleanProc", file: "Service.qml", collects: false, builder: "TileCache.cleanCommand" },
+  // The satellite, lightning and coverage rasters go to their own disk cache
+  // the same way, out of process, so no remote URL ever reaches a QML image
+  // load. What is collected is curl's own report.
+  { id: "imageFetchProc", file: "Service.qml", collects: true, builder: "ImageCache.fetchCommand" },
+  { id: "imageCleanProc", file: "Service.qml", collects: false, builder: "ImageCache.cleanCommand" },
   { id: "geocodeProc", file: "Panel.qml", collects: true, builder: "geocodingCommand" },
   { id: "locationSaveProc", file: "Panel.qml", collects: false, builder: null },
   // The wind/pressure grid and the aurora readings: all bounded the same way,
@@ -262,22 +267,46 @@ test("the radar tiles are decoded at the size they were asked for", () => {
   assert.match(source["ui/TileLayer.qml"], /sourceSize: Qt\.size\(/, "tiles decode unbounded")
 })
 
-test("the coverage probe is the one image decode without a ceiling, on purpose", () => {
-  // Context2D reads pixels from an image it loaded itself. Handed an Image
-  // item — which is what would carry a sourceSize — drawImage produces nothing
-  // to read, and every location comes back reported as covered. There is no
-  // form of this that both bounds the decode and answers the question.
+test("the coverage probe reads its mask from a local file, never a remote URL", () => {
+  // Context2D reads pixels from an image it loaded itself. Handed an Image item
+  // — which is what would carry a sourceSize — drawImage produces nothing to
+  // read, and every location comes back reported as covered. There is no form
+  // of this that both bounds the decode and answers the question.
   //
-  // Pinned so that removing the exception means removing this test, rather than
-  // the ceiling quietly never having been there.
+  // What changed: the mask is no longer fetched here at all. The service
+  // fetches it out of process through lib/ImageCache.js and the Canvas is handed
+  // a file:// path, so Canvas.loadImage no longer touches the network and the
+  // fetch carries the byte and time ceilings instead of the decode.
   assert.match(source["ui/CoverageProbe.qml"], /loadImage\(source\)/)
   // The property assignment, not the word: the comment above it names it.
   assert.ok(!/sourceSize\s*:/.test(source["ui/CoverageProbe.qml"]),
     "if this ever gains a sourceSize, check it still reads pixels before believing it")
 
-  // What bounds it instead.
+  // The host that used to feed it is still the only one trusted for it.
   assert.strictEqual(RadarModel.isTileHost("https://tilecache.rainviewer.com"), true)
   assert.strictEqual(RadarModel.isTileHost("http://elsewhere"), false)
+})
+
+test("no QML file binds a remote URL to an image load", () => {
+  // The crash this guards: Qt's QQuickPixmapReader fetching an https:// source
+  // inside the process that owns the bar and the lock screen. Every remote
+  // image is fetched by curl into lib/ImageCache.js first, and only a file://
+  // path reaches QML. Comments are stripped so the rule is about code.
+  // Strip block and line comments, but NOT the `//` of a `https://` URL: the
+  // preceding `:` is what tells a URL scheme from a comment. A naive
+  // `replace(/\/\/[^\n]*/g)` would eat the `//` in every URL and leave the
+  // check unable to see the very violation it exists for.
+  const withoutComments = Object.fromEntries(Object.entries(source).map(([file, text]) => [
+    file, text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1"),
+  ]))
+  const assignment = /source\s*:\s*[^\n]*https?:\/\//
+  const load = /loadImage\s*\([^)]*https?:\/\//
+  for (const [file, text] of Object.entries(withoutComments)) {
+    assert.ok(!assignment.test(text), `${file} binds an https URL to an image source`)
+    assert.ok(!load.test(text), `${file} hands a remote URL to loadImage`)
+  }
+  // And the URL builders that would have fed one are jobs, not raw URLs.
+  assert.strictEqual(ImageCache.isImageUrl("https://evil.com/x.png"), false)
 })
 
 test("the host every image URL is built from is checked before it is used", () => {

@@ -45,5 +45,6 @@ const TileMath = loadLibrary("TileMath.js")
 const Solar = loadLibrary("Solar.js")
 const RadarModel = loadLibrary("RadarModel.js", { TileMath })
 const TileCache = loadLibrary("TileCache.js", { TileMath, RadarModel })
+const ImageCache = loadLibrary("ImageCache.js", { TileCache, RadarModel })
 
-module.exports = { loadLibrary, TileMath, Solar, RadarModel, TileCache }
+module.exports = { loadLibrary, TileMath, Solar, RadarModel, TileCache, ImageCache }

@@ -45,7 +45,7 @@ Item {
   // not a tile at all: they are streamed and drawn by StrikeLayer, below.
   property bool lightningEnabled: false
   property var lightningTileUrlFor: null
-  property int lightningEpoch: 0
+  property var lightningEpoch: 0
 
   // The live strikes drawn as dots when the live layer is the one on screen,
   // streamed from LightningMaps' WebSocket. `lightningStrikesRevision` bumps
@@ -69,7 +69,7 @@ Item {
   property bool satelliteEnabled: false
   property var satelliteLayers: []             // [{ sensor, time, maxZoom, mask }]
   property var satelliteTileUrlFor: null       // function(sensor, time, zoom, x, y)
-  property int satelliteRevision: 0
+  property var satelliteRevision: 0
 
   // The wind and pressure analysis drawn over everything. `overlayPoints` is
   // the Open-Meteo grid and `overlayIsobars` the contours computed from it by
@@ -272,13 +272,12 @@ Item {
     // when the live feed is connected the panel returns "" here, so the two
     // never double-draw.
     //
-    // These tiles load straight from the network rather than through the tile
-    // cache: they are small (a 256 px palette image, typically under a few
-    // kilobytes), drawn over a host fixed in the plugin, and stale within two
-    // minutes, so a disk cache would only ever hold a stale copy. The decode
-    // stays bounded by the layer's `sourceSize`, as every image here is. A tile
-    // that fails is left alone: it is not the radar, so it must not raise the
-    // map's radar notices.
+    // These tiles are fetched out of process into the service's image cache and
+    // loaded here as file:// paths, never as remote URLs: the panel asks the
+    // service for the two-minute window and repoints the layer when the file
+    // lands. The decode stays bounded by the layer's `sourceSize`, and the
+    // fetch by the cache's byte and time ceilings. A tile that fails is left
+    // alone: it is not the radar, so it must not raise the map's radar notices.
     //
     // The archive's strokes are recent, so the layer is faded out whenever the
     // loop is showing an older frame (see `lightningOnLatestFrame`); the tiles

@@ -11,7 +11,10 @@ import "../lib/RadarModel.js" as RadarModel
 Canvas {
   id: root
 
-  // The mask tile to sample, centred on the location. Empty until there is one.
+  // The mask tile to sample, centred on the location, as a local file:// path.
+  // Empty until the service has fetched it out of process; it is never a remote
+  // URL, because Qt loading one in this process is the crash the image cache
+  // exists to prevent.
   property string source: ""
 
   signal resolved(bool covered)
@@ -25,17 +28,15 @@ Canvas {
   opacity: 0
   z: -1
 
-  // The one network stream this plugin does not bound the decode of, and the
-  // only way to read the mask that works. Context2D reads pixels from an image
-  // it loaded itself; handed an Image item instead — which would carry a
-  // `sourceSize` — drawImage produces nothing to read, and every location comes
-  // back reported as covered. Measured, against five places on and off the
-  // radar network.
+  // A Canvas rather than a plain Image, and the only way to read the mask that
+  // works: Context2D reads pixels from an image it loaded itself; handed an
+  // Image item instead — which would carry a `sourceSize` — drawImage produces
+  // nothing to read, and every location comes back reported as covered.
+  // Measured, against five places on and off the radar network.
   //
-  // What bounds it instead: the URL is built from the manifest's host, which
-  // parseManifest now requires to be an https origin, and the manifest itself
-  // arrives over TLS from RainViewer. See test/streams.test.js for the
-  // inventory this exception is recorded in.
+  // What bounds it now is the fetch, not the decode: the file this loads is one
+  // the service wrote through curl under the image cache's byte and time
+  // ceilings. See lib/ImageCache.js and test/streams.test.js for the inventory.
   //
   // Driven explicitly rather than by the load signal alone. A probe begun
   // against a closed panel queues a repaint that never arrives, and an image
