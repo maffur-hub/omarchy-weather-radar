@@ -357,6 +357,89 @@ test("a dropped hourly reading stays null rather than reading as zero", () => {
   assert.strictEqual(rain.last24Mm, 3.8)
 })
 
+// ------------------------------------------------- observed rainfall merge
+
+// The Bureau's observed days correct the model's where it has them. The record
+// below is the fixture's rain: seven days ending today (2026-10-01), with the
+// modelled millimetres the test above pins.
+
+test("with no observation the modelled rain is returned untouched", () => {
+  const rain = parsed().rain
+  assert.strictEqual(Weather.mergeObservedRain(rain, null), rain)
+  // A map with nothing in it and no live reading is the same non-answer.
+  assert.strictEqual(Weather.mergeObservedRain(rain, { days: {}, today: null }), rain)
+})
+
+test("observed days replace the modelled figure and are flagged", () => {
+  const rain = parsed().rain
+  const merged = Weather.mergeObservedRain(rain, {
+    days: { "2026-09-25": 2.5, "2026-09-28": 0.2 },
+    today: 4.4
+  })
+
+  assert.strictEqual(merged.days[0].date, "2026-09-25")
+  assert.strictEqual(merged.days[0].mm, 2.5)
+  assert.strictEqual(merged.days[0].observed, true)
+  // An observed day that happens not to be today is not today.
+  assert.strictEqual(merged.days[0].isToday, false)
+
+  assert.strictEqual(merged.days[3].date, "2026-09-28")
+  assert.strictEqual(merged.days[3].mm, 0.2)
+  assert.strictEqual(merged.days[3].observed, true)
+
+  // A day the Bureau did not report keeps the modelled value, flagged false.
+  assert.strictEqual(merged.days[1].date, "2026-09-26")
+  assert.strictEqual(merged.days[1].mm, 0)
+  assert.strictEqual(merged.days[1].observed, false)
+
+  // Today takes the live "since 9am" reading, which is newer than DWO's row
+  // for today, and says so.
+  assert.strictEqual(merged.days[6].isToday, true)
+  assert.strictEqual(merged.days[6].mm, 4.4)
+  assert.strictEqual(merged.todayMm, 4.4)
+  assert.strictEqual(merged.todayObserved, true)
+
+  // The two totals are recomputed over the merged days: 2.5+0+0.4+0.2+0+2.0+4.4.
+  assert.strictEqual(merged.last7Mm, 9.5)
+  assert.strictEqual(merged.maxMm, 4.4)
+  // The record carries observed days, so the tab can caption it as BOM's.
+  assert.strictEqual(merged.observed, true)
+
+  // The lookahead and hourly history are about a different window and pass
+  // through unchanged.
+  assert.strictEqual(merged.next12Mm, rain.next12Mm)
+  assert.strictEqual(merged.next24Mm, rain.next24Mm)
+  assert.strictEqual(merged.hours, rain.hours)
+  assert.strictEqual(merged.last24Mm, rain.last24Mm)
+})
+
+test("a missing live reading leaves today modelled and unobserved", () => {
+  const rain = parsed().rain
+  const merged = Weather.mergeObservedRain(rain, {
+    days: { "2026-09-25": 2.5 },
+    today: null
+  })
+  assert.strictEqual(merged.todayMm, 3.8)
+  assert.strictEqual(merged.todayObserved, false)
+  assert.strictEqual(merged.days[6].mm, 3.8)
+  assert.strictEqual(merged.days[6].observed, false)
+})
+
+test("a blank observed day does not override the modelled figure", () => {
+  const rain = parsed().rain
+  const merged = Weather.mergeObservedRain(rain, {
+    days: { "2026-09-26": null },
+    today: null
+  })
+  assert.strictEqual(merged.days[1].date, "2026-09-26")
+  assert.strictEqual(merged.days[1].mm, 0)
+  assert.strictEqual(merged.days[1].observed, false)
+})
+
+test("mergeObservedRain tolerates a missing record", () => {
+  assert.strictEqual(Weather.mergeObservedRain(null, { days: { "2026-09-25": 1 } }), null)
+})
+
 // --------------------------------------------------------------- semantics
 
 test("WMO codes read back in words", () => {

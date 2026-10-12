@@ -368,6 +368,25 @@ second clock beside Open-Meteo's, marked **BOM updated**, and a refresh control
 that asks both providers for a reading at once rather than waiting out the next
 scheduled fetch.
 
+For an Australian location the tab also reads the Bureau's own app API — the
+observations behind the BOM Weather app — and draws the gauge's own reading
+beside the modelled record. This is a second, observed source beside
+Open-Meteo: Open-Meteo can report 0.0mm through a shower that a gauge recorded,
+so what the nearest station measured since 9am is shown for the day in progress
+rather than folded into the modelled "Today so far". Only a location inside
+Australia's rough extent is asked about, and a station that reported nothing is
+left out rather than read as a dry day.
+
+When the nearest station is Canberra — the station the Bureau's ACT Daily
+Weather Observations product (`IDCJDW2801`) is drawn from — the plugin also
+reads that product and corrects the **last 7 days'** rainfall, and the totals
+under it, with the Bureau's observed daily figures. BOM's daily rainfall is the
+24 hours ending 9am on the row's date, and the live "since 9am" reading covers
+the day in progress. The correction is offered only for that station, so another
+city never shows Canberra's history; and where the Bureau has no observation for
+a day, the record for it remains Open-Meteo's. This endpoint is unsupported and
+is asked only for those coordinates; the forecast remains Open-Meteo's.
+
 These are the Bureau's public products, not a supported API. They are pinned to
 the ACT/NSW products and matched to a warning by district, so this part of the
 tab is for this machine rather than for general use, and the radar and

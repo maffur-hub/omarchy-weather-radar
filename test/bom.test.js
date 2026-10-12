@@ -228,3 +228,155 @@ test("unusable forecast input parses to null rather than throwing", () => {
   assert.strictEqual(Bom.parseForecast("not xml"), null)
   assert.strictEqual(Bom.parseForecast(null), null)
 })
+
+// ------------------------------------------------------------ observations
+
+test("the geohash is the six-character key the Bureau's API is addressed by", () => {
+  // Independently known vectors: Ainslie matches the Bureau's own location
+  // key, and the northern point is the Wikipedia geohash worked example,
+  // truncated to the six characters the API requires.
+  assert.strictEqual(Bom.geohash(-35.26255, 149.1437), "r3dp3u")
+  assert.strictEqual(Bom.geohash(57.64911, 10.40744), "u4pruy")
+  assert.strictEqual(Bom.geohash(0, 0), "s00000")
+  // Nothing that is not a point on the globe has a hash at all.
+  assert.strictEqual(Bom.geohash(NaN, 0), "")
+})
+
+test("the Australia box admits the continent and nothing beside it", () => {
+  assert.strictEqual(Bom.isAustralia(-35.26255, 149.1437), true)
+  assert.strictEqual(Bom.isAustralia(-36.85, 174.76), false)
+  assert.strictEqual(Bom.isAustralia(NaN, 0), false)
+})
+
+test("an observation URL is built only for a location the Bureau can answer for", () => {
+  assert.strictEqual(Bom.observationUrl(-35.26255, 149.1437),
+    "https://api.weather.bom.gov.au/v1/locations/r3dp3u/observations")
+  assert.strictEqual(Bom.observationUrl(-36.85, 174.76), "")
+})
+
+test("the observation request is a bounded, secure curl command", () => {
+  const command = Bom.observationCommand(-35.26255, 149.1437)
+  assert.strictEqual(command[0], "curl")
+  assert.ok(command.includes("-fsS"), "an error page would parse as data")
+  assert.ok(command.includes("--max-time"), "no time limit")
+  assert.ok(command.includes("--max-filesize"), "no size limit")
+  assert.ok(command.includes("--globoff"), "curl would expand the URL")
+  assert.strictEqual(command[command.indexOf("-A") + 1], Bom.BOM_USER_AGENT)
+  assert.strictEqual(command[command.length - 1],
+    "https://api.weather.bom.gov.au/v1/locations/r3dp3u/observations")
+  assert.strictEqual(command[command.indexOf("--max-filesize") + 1],
+    String(Bom.OBSERVATION_MAX_BYTES))
+  // A location outside the Bureau's reach is no request at all.
+  assert.deepStrictEqual(Bom.observationCommand(-36.85, 174.76), [])
+})
+
+test("an observation parses into its gauge reading and station", () => {
+  const observation = Bom.parseObservations(JSON.stringify({
+    metadata: { observation_time: "2026-10-12T12:10:00Z" },
+    data: {
+      rain_since_9am: 3.6,
+      temp: 16.3,
+      temp_feels_like: 16.2,
+      humidity: 98,
+      gust: { speed_kilometre: 15 },
+      station: { bom_id: "070351", name: "Canberra", distance: 7066 }
+    }
+  }))
+  assert.strictEqual(observation.rainSince9am, 3.6)
+  assert.strictEqual(observation.observationTime, "2026-10-12T12:10:00Z")
+  assert.strictEqual(observation.station.name, "Canberra")
+  // The API's `distance` is metres; the parser reports kilometres.
+  assert.strictEqual(observation.station.distanceKm, 7.066)
+})
+
+test("unusable observation input parses to null rather than throwing", () => {
+  assert.strictEqual(Bom.parseObservations(""), null)
+  assert.strictEqual(Bom.parseObservations("not json"), null)
+  assert.strictEqual(Bom.parseObservations('{"metadata":{}}'), null)
+})
+
+test("a station that reported nothing reads as no observation, never as zero", () => {
+  const observation = Bom.parseObservations(JSON.stringify({
+    metadata: {},
+    data: { rain_since_9am: null, station: null }
+  }))
+  assert.strictEqual(observation.rainSince9am, null)
+  assert.strictEqual(observation.station, null)
+})
+
+test("the observation cadence sits beside the endpoint it re-asks for", () => {
+  assert.ok(Bom.OBSERVATION_REFRESH_MS > 0)
+})
+
+test("the observation parses from the verified live shape", () => {
+  const observation = Bom.parseObservations('{"metadata":{"observation_time":"2026-10-12T12:10:00Z"},"data":{"rain_since_9am":3.6,"temp":16.3,"temp_feels_like":16.2,"humidity":98,"gust":{"speed_kilometre":15},"station":{"bom_id":"070351","name":"Canberra","distance":7066}}}')
+  assert.strictEqual(observation.rainSince9am, 3.6)
+  assert.strictEqual(observation.station.name, "Canberra")
+  // The API's `distance` is metres; the parser reports kilometres.
+  assert.strictEqual(observation.station.distanceKm, 7.066)
+  assert.strictEqual(observation.observationTime, "2026-10-12T12:10:00Z")
+})
+
+// ------------------------------------------------- daily weather observations
+
+// Trimmed from the real DWO CSV the plugin fetches: the quoted title lines
+// (commas inside quotes), the station line the parser names the product by,
+// the header, and a handful of daily rows. One row reports no rainfall, which
+// the parser must keep as "not reported" rather than reading as a dry day.
+const DWO_CSV = [
+  '"Daily Weather Observations for Canberra, Australian Capital Territory for October 2026"',
+  '"Copyright 2003 Commonwealth Bureau of Meteorology"',
+  '"Observations were drawn from Canberra Airport {station 070351}"',
+  ',"Date","Minimum temperature (C)","Maximum temperature (C)","Rainfall (mm)","Evaporation (mm)",,,"Wind direction","Wind speed (km/h)","Time of max wind gust"',
+  ",2026-10-10,9.6,23.1,6.2,,,WNW,44,12:03",
+  ",2026-10-11,10.1,22.0,,,",
+  ",2026-10-12,11.2,21.0,0.0,,,"
+].join("\n")
+
+test("a DWO URL is named by the zero-padded month and the pinned product", () => {
+  assert.strictEqual(Bom.dwoUrl(2026, 10),
+    "https://www.bom.gov.au/climate/dwo/202610/text/IDCJDW2801.202610.csv")
+  assert.strictEqual(Bom.dwoUrl(2026, 3),
+    "https://www.bom.gov.au/climate/dwo/202603/text/IDCJDW2801.202603.csv")
+  // A month that does not exist is no request at all.
+  assert.strictEqual(Bom.dwoUrl(2026, 13), "")
+  assert.strictEqual(Bom.dwoUrl("abc", 1), "")
+})
+
+test("the DWO request is a bounded, secure curl command", () => {
+  const command = Bom.dwoCommand(2026, 10)
+  assert.strictEqual(command[0], "curl")
+  assert.ok(command.includes("-fsS"), "an error page would parse as data")
+  assert.ok(command.includes("--max-time"), "no time limit")
+  assert.ok(command.includes("--max-filesize"), "no size limit")
+  assert.ok(command.includes("--globoff"), "curl would expand the URL")
+  assert.strictEqual(command[command.indexOf("-A") + 1], Bom.BOM_USER_AGENT)
+  assert.strictEqual(command[command.indexOf("--max-filesize") + 1],
+    String(Bom.DWO_MAX_BYTES))
+  assert.strictEqual(command[command.length - 1], Bom.dwoUrl(2026, 10))
+  assert.deepStrictEqual(Bom.dwoCommand(2026, 13), [])
+})
+
+test("a CSV line splits on commas with quoted fields kept whole", () => {
+  assert.deepStrictEqual(Bom.csvFields('a,"b,c",d'), ["a", "b,c", "d"])
+  assert.deepStrictEqual(Bom.csvFields(""), [""])
+  assert.deepStrictEqual(Bom.csvFields(null), [""])
+})
+
+test("the DWO product parses to per-day rainfall and its station", () => {
+  const dwo = Bom.parseDwo(DWO_CSV)
+  assert.strictEqual(dwo.stationName, "Canberra Airport")
+  assert.strictEqual(dwo.stationId, "070351")
+  assert.strictEqual(dwo.days.length, 3)
+  assert.deepStrictEqual(dwo.days[0], { date: "2026-10-10", mm: 6.2 })
+  // A blank rainfall cell is "not reported", kept null rather than zero.
+  assert.strictEqual(dwo.days[1].date, "2026-10-11")
+  assert.strictEqual(dwo.days[1].mm, null)
+  assert.strictEqual(dwo.days[2].mm, 0)
+})
+
+test("unusable DWO input parses to null rather than throwing", () => {
+  assert.strictEqual(Bom.parseDwo("not a dwo file"), null)
+  assert.strictEqual(Bom.parseDwo(""), null)
+  assert.strictEqual(Bom.parseDwo(null), null)
+})

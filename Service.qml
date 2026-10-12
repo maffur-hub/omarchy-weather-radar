@@ -186,6 +186,8 @@ Item {
       // moment, and the previous city's would sit under the new city's name
       // until the new one's lands.
       discardWeather()
+      discardBomObservation()
+      discardBomDwo()
     } else {
       // Learning where we are is the other half of the stored latch, and it can
       // arrive after the file does.
@@ -202,6 +204,7 @@ Item {
     // are pinned to the ACT rather than geocoded, but without a location there
     // is still no reader to fetch them for.
     if (hasLocation) Qt.callLater(refreshBom)
+    if (hasLocation) Qt.callLater(refreshBomObservation)
   }
 
   // ---------------------------------------------------------------------------
@@ -1699,6 +1702,7 @@ Item {
     // here keeps that behaviour internal to the service instead of adding a
     // second panel API, and refreshBom refuses to overlap a cycle already out.
     Qt.callLater(refreshBom)
+    Qt.callLater(refreshBomObservation)
   }
 
   Process {
@@ -1821,17 +1825,23 @@ Item {
     }
 
     if (record && typeof record === "object"
-        && (record.schema === 1 || record.schema === 2)
+        && (record.schema === 1 || record.schema === 2 || record.schema === 3 || record.schema === 4)
         && record.key === weatherKey()
         && record.data && typeof record.data === "object") {
       if (root.weather === null) root.weather = record.data
       root.weatherAnswerTime = Number(record.at) || root.weatherAnswerTime
-      // Schema 2 carries the BOM reading alongside the point forecast, and a
-      // live answer still wins over disk: each is restored only when nothing
-      // has arrived for it yet.
-      if (record.schema === 2 && record.bom && typeof record.bom === "object") {
+      // Schemas 2, 3 and 4 carry the BOM reading alongside the point forecast,
+      // and a live answer still wins over disk: each is restored only when
+      // nothing has arrived for it yet. Schema 3 added the observed rainfall
+      // and schema 4 the daily observations it is corrected with.
+      if ((record.schema === 2 || record.schema === 3 || record.schema === 4)
+          && record.bom && typeof record.bom === "object") {
         if (root.bomWarnings === null) root.bomWarnings = record.bom.warnings || null
         if (root.bomForecast === null) root.bomForecast = record.bom.forecast || null
+        if ((record.schema === 3 || record.schema === 4) && root.bomObservation === null)
+          root.bomObservation = record.bom.observation || null
+        if (record.schema === 4 && root.bomDwo === null)
+          root.bomDwo = record.bom.dwo || null
       }
     }
 
@@ -1845,15 +1855,17 @@ Item {
   // was actually drawn rather than the last thing attempted. The schema number
   // is what lets a later shape refuse this record instead of drawing it. Schema
   // 2 carries the BOM warning and district forecast beside the point forecast,
-  // so the tab's whole reading survives a restart in one record.
+  // schema 3 adds the Bureau's observed rainfall, and schema 4 the daily
+  // observations that correct it, so the tab's whole reading survives a restart
+  // in one record.
   function storeWeatherCache(parsed) {
     if (weatherCachePath === "") return
     weatherCacheFile.setText(JSON.stringify({
-      schema: 2,
+      schema: 4,
       key: weatherKey(),
       at: Date.now(),
       data: parsed,
-      bom: { warnings: root.bomWarnings, forecast: root.bomForecast }
+      bom: { warnings: root.bomWarnings, forecast: root.bomForecast, observation: root.bomObservation, dwo: root.bomDwo }
     }) + "\n")
   }
 
@@ -1976,6 +1988,201 @@ Item {
     running: root.hasLocation
     triggeredOnStart: true
     onTriggered: root.refreshBom()
+  }
+
+  // ---------------------------------------------------------------------------
+  // BOM observations
+  // ---------------------------------------------------------------------------
+
+  // The Bureau's observed rainfall for this location, beside the modelled
+  // record Open-Meteo gives. The model can print 0.0mm through a shower the
+  // gauges and radar saw, so the tab carries what the nearest station measured
+  // since 9am as its own reading rather than folding it into a forecast it does
+  // not describe. One fetch per machine, like everything else here.
+  property var bomObservation: null
+  property bool bomObsChecking: false
+  property bool bomObsFailed: false
+  property real bomObsAnswerTime: 0
+
+  // Asked on the warning cadence and whenever the location moves. A location
+  // the Bureau cannot answer for — anywhere outside Australia — clears the
+  // reading rather than keeping another place's gauge on screen, and asks for
+  // nothing.
+  function refreshBomObservation() {
+    if (!hasLocation || bomObsChecking) return
+
+    var lat = parseFloat(location.latitude)
+    var lon = parseFloat(location.longitude)
+    if (!isFinite(lat) || !isFinite(lon)) return
+
+    var command = Bom.observationCommand(lat, lon)
+    if (command.length === 0) {
+      discardBomObservation()
+      return
+    }
+
+    bomObsChecking = true
+    bomObsProc.answered = false
+    bomObsProc.command = command
+    bomObsProc.running = true
+  }
+
+  function discardBomObservation() {
+    bomObservation = null
+    bomObsFailed = false
+    bomObsAnswerTime = 0
+  }
+
+  Process {
+    id: bomObsProc
+
+    // See manifestProc. `bomObsChecking` gates every fetch, so a fork that
+    // never happened has to be answered here or the reading never refreshes.
+    property bool answered: false
+
+    onExited: function(exitCode) {
+      answered = true
+      root.applyBomObservationResponse(exitCode, bomObsOut.text)
+    }
+    onRunningChanged: if (!running && !answered) root.applyBomObservationResponse(-1, "")
+
+    // The collector holds the output and decides nothing: `onStreamFinished`
+    // runs before the exit code exists, so a transfer cut short by a ceiling
+    // would read as one that completed.
+    stdout: StdioCollector { id: bomObsOut; waitForEnd: true }
+  }
+
+  function applyBomObservationResponse(exitCode, text) {
+    // Cleared first and unconditionally: whichever way this ends, the request
+    // it belongs to is over.
+    bomObsChecking = false
+    bomObsAnswerTime = Date.now()
+
+    var parsed = exitCode === 0 ? Bom.parseObservations(text) : null
+    // A failure keeps whatever is already held, exactly as the point forecast
+    // does: a reading a few minutes old still describes the place.
+    if (!parsed) {
+      bomObsFailed = true
+      return
+    }
+    bomObservation = parsed
+    bomObsFailed = false
+
+    // The daily history follows the observation: it is only worth asking for
+    // the station the DWO product covers, and only once a day.
+    if (bomObservation && bomObservation.station
+        && bomObservation.station.bomId === Bom.DWO_STATION_BOM_ID) {
+      if (bomDwo === null || bomDwoFetchedDate !== todayDateKey) Qt.callLater(refreshBomDwo)
+    } else {
+      discardBomDwo()
+    }
+
+    // The observation arrives separately from the point forecast, so the cache
+    // is rewritten too. Guarded on a reading already held so an observation
+    // with no weather yet cannot write `data: null` over the cache.
+    if (root.weather !== null) storeWeatherCache(root.weather)
+  }
+
+  Timer {
+    id: bomObsTimer
+    interval: Bom.OBSERVATION_REFRESH_MS
+    repeat: true
+    running: root.hasLocation
+    triggeredOnStart: true
+    onTriggered: root.refreshBomObservation()
+  }
+
+  // ---------------------------------------------------------------------------
+  // BOM daily observations
+  // ---------------------------------------------------------------------------
+
+  // The Bureau's observed daily rainfall for this location, when the nearest
+  // station is the one the ACT DWO product draws from. It corrects the rain
+  // the Open-Meteo model reports for each of the last seven days.
+  property var bomDwo: null
+  property bool bomDwoChecking: false
+  property bool bomDwoFailed: false
+  property real bomDwoAnswerTime: 0
+  property string bomDwoFetchedDate: ""
+
+  // The local calendar day, so "has the DWO been asked for today" is measured
+  // in the reader's own zone rather than in UTC. `getMonth()` is 0-based, so
+  // both the `+ 1` and the padding matter.
+  readonly property string todayDateKey: {
+    var d = new Date(root.clockNow)
+    return d.getFullYear() + "-" + (d.getMonth() < 9 ? "0" : "") + (d.getMonth() + 1)
+      + "-" + (d.getDate() < 10 ? "0" : "") + d.getDate()
+  }
+
+  function refreshBomDwo() {
+    if (bomDwoChecking) return
+    // Only the station the DWO product is drawn from has a daily history here;
+    // anywhere else keeps the modelled record rather than another city's gauge.
+    if (!bomObservation || !bomObservation.station
+        || bomObservation.station.bomId !== Bom.DWO_STATION_BOM_ID) {
+      discardBomDwo()
+      return
+    }
+
+    var now = new Date(root.clockNow)
+    var command = Bom.dwoCommand(now.getFullYear(), now.getMonth() + 1)
+    if (command.length === 0) return
+
+    bomDwoChecking = true
+    bomDwoProc.answered = false
+    bomDwoProc.command = command
+    bomDwoProc.running = true
+  }
+
+  function discardBomDwo() {
+    bomDwo = null
+    bomDwoFailed = false
+    bomDwoAnswerTime = 0
+    bomDwoFetchedDate = ""
+  }
+
+  Process {
+    id: bomDwoProc
+    property bool answered: false
+    onExited: function(exitCode) {
+      answered = true
+      root.applyBomDwoResponse(exitCode, bomDwoOut.text)
+    }
+    onRunningChanged: if (!running && !answered) root.applyBomDwoResponse(-1, "")
+    stdout: StdioCollector { id: bomDwoOut; waitForEnd: true }
+  }
+
+  function applyBomDwoResponse(exitCode, text) {
+    bomDwoChecking = false
+    bomDwoAnswerTime = Date.now()
+    var parsed = exitCode === 0 ? Bom.parseDwo(text) : null
+    if (!parsed) { bomDwoFailed = true; return }
+    bomDwo = parsed
+    bomDwoFailed = false
+    // The Bureau publishes DWO once a day, so the fetch is dated rather than
+    // timed: a parse that succeeded is not re-asked until the day turns.
+    bomDwoFetchedDate = todayDateKey
+    if (root.weather !== null) storeWeatherCache(root.weather)
+  }
+
+  // Open-Meteo's rain, corrected by BOM's observed days and the live gauge
+  // reading. Null when there is no observation to correct with, so the tab
+  // falls back to the modelled record untouched.
+  readonly property var observedRain: {
+    if (!weather || !weather.rain) return null
+    var days = {}
+    if (bomDwo && bomDwo.days) {
+      for (var i = 0; i < bomDwo.days.length; i++) {
+        var day = bomDwo.days[i]
+        if (day && day.date) days[day.date] = day.mm
+      }
+    }
+    var today = (bomObservation && typeof bomObservation.rainSince9am === "number"
+      && isFinite(bomObservation.rainSince9am)) ? bomObservation.rainSince9am : null
+    var any = today !== null
+    for (var key in days) { if (Object.prototype.hasOwnProperty.call(days, key)) { any = true; break } }
+    if (!any) return null
+    return Weather.mergeObservedRain(weather.rain, { days: days, today: today })
   }
 
   // ---------------------------------------------------------------------------

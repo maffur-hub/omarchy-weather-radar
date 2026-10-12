@@ -1697,10 +1697,13 @@ Panel {
           failed: root.weatherFailed
           warnings: root.radar ? root.radar.activeWarnings : []
           bomForecast: root.radar ? root.radar.bomForecast : null
+          bomObservation: root.radar ? root.radar.bomObservation : null
+          observedRain: root.radar ? root.radar.observedRain : null
           bomUpdated: root.bomUpdatedClock
           onRefreshRequested: {
             if (root.radar && root.radar.refreshWeather) Qt.callLater(root.radar.refreshWeather)
             if (root.radar && root.radar.refreshBom) Qt.callLater(root.radar.refreshBom)
+            if (root.radar && root.radar.refreshBomObservation) Qt.callLater(root.radar.refreshBomObservation)
           }
           foreground: root.bar ? root.bar.foreground : Color.foreground
           accent: Color.accent

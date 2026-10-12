@@ -37,6 +37,19 @@ Column {
   property var bomForecast: null
   property string bomUpdated: ""
 
+  // The Bureau's observed rainfall for this location, when the location is one
+  // the Bureau answers for. Drawn as its own figure because it measures a
+  // different window and a different thing from Open-Meteo's modelled record:
+  // what the nearest gauge saw since 9am, not what the model thinks fell since
+  // midnight.
+  property var bomObservation: null
+
+  // Open-Meteo's rain record corrected by the Bureau's observed days, when the
+  // service had an observation to correct with. Preferred over the modelled
+  // record wherever both exist, so the two figures and the chart all speak for
+  // the same set of days.
+  property var observedRain: null
+
   // The refresh control asks the service to try the Bureau again; the answer
   // arrives back through the properties above.
   signal refreshRequested()
@@ -47,7 +60,9 @@ Column {
   readonly property var current: hasData ? weather.current : null
   readonly property var today: (hasData && weather.forecast && weather.forecast.length > 0)
     ? weather.forecast[0] : null
-  readonly property var rain: (hasData && weather.rain) ? weather.rain : null
+  readonly property var rain: observedRain
+    ? observedRain
+    : ((hasData && weather.rain) ? weather.rain : null)
   readonly property var hourly: (hasData && weather.hourly) ? weather.hourly : []
   readonly property var days: (hasData && weather.forecast) ? weather.forecast : []
   readonly property var hourlyHistory: (hasData && weather.rain && weather.rain.hours)
@@ -75,6 +90,34 @@ Column {
     var text = String(stamp || "")
     var marker = text.indexOf("T")
     return marker >= 0 ? text.substring(marker + 1) : ""
+  }
+
+  readonly property bool bomRainAvailable: bomObservation !== null && reading(bomObservation.rainSince9am)
+
+  function bomStationLabel() {
+    if (!bomObservation || !bomObservation.station) return "nearest BOM station"
+    var name = String(bomObservation.station.name || "")
+    if (name === "") return "nearest BOM station"
+    if (reading(bomObservation.station.distanceKm))
+      return name + ", " + Math.round(bomObservation.station.distanceKm) + " km"
+    return name
+  }
+
+  // The gauge's own clock, in the machine's local time. An observation time the
+  // API did not give — or one that does not parse — is left off rather than
+  // printed as an invented time.
+  readonly property string bomObsSource: {
+    if (!bomRainAvailable) return ""
+    var text = "BOM observation at " + bomStationLabel()
+    if (bomObservation.observationTime) {
+      var d = new Date(String(bomObservation.observationTime))
+      if (!isNaN(d.getTime())) {
+        var hh = d.getHours()
+        var mm = d.getMinutes()
+        text += " · " + (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm
+      }
+    }
+    return text
   }
 
   // The warnings arrive as a list the service has already narrowed to this
@@ -220,6 +263,13 @@ Column {
     else if (rain.next24Mm > 0) text += " · " + mmOf(rain.next24Mm) + " in 24h"
     return text
   }
+
+  // What the chart's seven bars are drawn from. When the Bureau's observations
+  // corrected some of the days, say so: the reader should know which source the
+  // shape describes rather than assume the model wrote all of it.
+  readonly property string rainSourceCaption: (root.rain && root.rain.observed === true)
+    ? "Rainfall, last 7 days · BOM observed, Open-Meteo for the rest"
+    : "Rainfall, last 7 days · Open-Meteo"
 
   // Header: the tab, then where this is for and when it was asked — or, with
   // nothing to show, the state instead, in the accent so it reads as a state
@@ -530,7 +580,7 @@ Column {
 
       Text {
         textFormat: Text.PlainText
-        text: "Today so far"
+        text: (root.rain && root.rain.todayObserved) ? "Rain since 9am" : "Today so far"
         color: root.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
@@ -576,6 +626,18 @@ Column {
   Text {
     textFormat: Text.PlainText
     width: parent.width
+    visible: root.rain !== null && root.rain.observed === true
+    text: root.bomObsSource !== "" ? root.bomObsSource : "BOM observed"
+    color: root.foreground
+    font.family: Style.font.family
+    font.pixelSize: Style.font.caption * 0.85
+    opacity: 0.5
+    elide: Text.ElideRight
+  }
+
+  Text {
+    textFormat: Text.PlainText
+    width: parent.width
     text: root.rainSummary
     visible: text !== ""
     color: root.foreground
@@ -602,7 +664,7 @@ Column {
     textFormat: Text.PlainText
     visible: root.hasData && root.rain !== null
     width: parent.width
-    text: "Rainfall, last 7 days · Open-Meteo"
+    text: root.rainSourceCaption
     color: root.foreground
     font.family: Style.font.family
     font.pixelSize: Style.font.caption * 0.8
