@@ -89,6 +89,7 @@ test("an absent setting falls back to its default", () => {
   assert.strictEqual(Settings.defaultZoom({}), 7)
   assert.strictEqual(Settings.smoothTiles({ smoothTiles: true }), true)
   assert.strictEqual(Settings.showSnow({ showSnow: true }), true)
+  assert.strictEqual(Settings.showTemperature({}), true)
   assert.strictEqual(Settings.showLabel({}), false)
 })
 
@@ -139,6 +140,12 @@ test("a boolean setting is only true when it is actually true", () => {
     assert.strictEqual(Settings.showLabel({ showLabel: value }), false, JSON.stringify(value))
   }
   assert.strictEqual(Settings.showLabel({ showLabel: true }), true)
+})
+
+test("the bar temperature is on by default and only off when switched off", () => {
+  assert.strictEqual(Settings.showTemperature({}), true)
+  assert.strictEqual(Settings.showTemperature({ showTemperature: true }), true)
+  assert.strictEqual(Settings.showTemperature({ showTemperature: false }), false)
 })
 
 // ------------------------------------------------------------------ presets

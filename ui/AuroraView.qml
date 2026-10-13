@@ -205,12 +205,12 @@ Column {
   }
 
   // The Kp chart: observed history running into NOAA's three-day forecast,
-  // with the storm threshold and the Kp this location needs before there is
-  // anything to look for. The same shape the space weather plugin drew.
+  // with the NOAA G-scale (G1–G5) and the Kp this location needs before there
+  // is anything to look for. The same shape the space weather plugin drew.
   KpChart {
     id: kpChart
     width: parent.width
-    height: Style.space(110)
+    height: Style.space(130)
     rows: root.kpRows
     visibleAtKp: root.visibleAtKp
     barColor: root.foreground

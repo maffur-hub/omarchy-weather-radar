@@ -40,6 +40,12 @@ scope glyph. `--section` takes `left`,
 rewrites the widget's entry, so move it before tuning the settings rather than
 after.
 
+The temperature rides beside the icon, and a right-click opens the widget's
+settings menu: the temperature itself, the status text, the radar palette and
+zoom, and the storm-alert controls, each writing straight to the widget's entry
+in `shell.json`. Left-click still opens the panel; middle-click still checks
+now.
+
 If that second command reports the plugin is unknown, run it again. Installing
 asks the shell to rescan and returns before the shell has finished indexing the
 new directory, so a command issued immediately afterwards can arrive first.
@@ -540,6 +546,7 @@ question and deserves an answer rather than ten minutes of silence:
 | | |
 | --- | --- |
 | Open the panel | asks again if the last attempt failed, or if the reading is older than the cycle |
+| Right-click the bar icon | opens the widget's settings menu |
 | Middle-click the bar icon | checks now, quietly — you are not re-notified |
 | Toggle alerts off and on | re-arms — you are told the current state |
 | Change the threshold | re-evaluates the reading already in hand |

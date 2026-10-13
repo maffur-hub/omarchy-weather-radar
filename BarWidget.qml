@@ -5,6 +5,7 @@ import "lib/Glyphs.js" as Glyphs
 import "lib/Settings.js" as Settings
 import "lib/Weather.js" as Weather
 import qs.Ui
+import "ui"
 
 // Bar pill for the radar plugin.
 //
@@ -29,9 +30,43 @@ BarWidget {
     return Glyphs.RADAR
   }
 
+  // The reading beside the icon, in whole degrees Celsius, or "" until one
+  // lands. Absent rather than 0°, since a dropped temperature and a real zero
+  // are different answers.
+  readonly property string temperature: {
+    if (!radar || !radar.weather || !radar.weather.current) return ""
+    var value = Number(radar.weather.current.temperature)
+    if (!isFinite(value)) return ""
+    return Math.round(value) + "°"
+  }
+
+  readonly property bool showTemperature: Settings.showTemperature(settings)
+
   readonly property bool showLabel: Settings.showLabel(settings)
   readonly property string summary: radar ? radar.barSummary : ""
   readonly property int outlookLevel: radar ? radar.outlookLevel : 0
+
+  // What the pill prints: the conditions glyph, then the temperature and the
+  // alert outlook, each only when it is switched on and has something to say.
+  // Built from parts so an absent reading cannot leave a stray gap behind.
+  readonly property string label: {
+    var parts = [root.icon]
+    if (root.showTemperature && root.temperature !== "") parts.push(root.temperature)
+    if (root.showLabel && root.summary !== "") parts.push(root.summary)
+    return parts.join("  ")
+  }
+
+  readonly property bool hasLabelText: root.label !== root.icon
+
+  // Measuring the string is what lets the slot fit it instead of the pill
+  // spilling into the module beside it. The icon-only pill keeps the stock
+  // status slot; a label asks for whatever the font actually needs.
+  TextMetrics {
+    id: labelMetrics
+    font.family: button.fontFamily
+    font.pixelSize: button.fontSize
+    text: root.label
+  }
 
   readonly property color defaultForeground: bar ? bar.foreground : Color.foreground
 
@@ -65,7 +100,15 @@ BarWidget {
   }
 
   function togglePanel() {
+    settingsMenu.open = false
     if (panelLoader.item && panelLoader.item.toggle) panelLoader.item.toggle()
+  }
+
+  // Right-click opens the settings menu; opening it closes the panel the way
+  // opening the panel would close it, so the two are never up together.
+  function toggleMenu() {
+    if (!settingsMenu.open && root.opened) root.close()
+    settingsMenu.open = !settingsMenu.open
   }
 
   // Shape contract for shell.summon/hide/toggle routing: the bar identifies a
@@ -105,19 +148,31 @@ BarWidget {
     }
   }
 
+  SettingsMenu {
+    id: settingsMenu
+    bar: root.bar
+    anchorItem: button
+    hostWidget: root
+    settings: root.settings
+  }
+
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    // The label prints the alert's own outlook, so with alerts off there is
-    // nothing for it to say and the icon stands alone.
-    text: root.showLabel && root.summary !== "" ? root.icon + "  " + root.summary : root.icon
+    text: root.label
     foreground: root.iconColor
-    slotSize: Style.bar.statusSlot
+    // Only the horizontal pill is widened for a label. A vertical bar reads
+    // slotSize as its height, so a long label there would stretch the bar's
+    // thickness rather than give the text room.
+    slotSize: !root.vertical && root.hasLabelText
+      ? Math.max(Style.bar.statusSlot, Math.ceil(labelMetrics.width) + Style.space(8))
+      : Style.bar.statusSlot
     tooltipText: ""
 
     onPressed: function(b) {
       if (b === Qt.MiddleButton && root.radar) root.radar.checkNow()
+      else if (b === Qt.RightButton) root.toggleMenu()
       else root.togglePanel()
     }
   }

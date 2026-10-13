@@ -1,8 +1,9 @@
 import QtQuick
 
 // Kp as a bar per 3-hour block, observed history running into NOAA's forecast.
-// Two reference lines sit behind the bars: the G1 storm threshold, and the Kp
-// this location needs before there is anything to go outside for.
+// The NOAA G-scale — G1 at Kp 5 through G5 at Kp 9 — and the Kp this location
+// needs before there is anything to go outside for are drawn as reference
+// lines behind the bars.
 Item {
   id: root
 
@@ -12,7 +13,18 @@ Item {
 
   // Kp at which the aurora reaches the viewer, or <= 0 to omit that line.
   property real visibleAtKp: 0
-  property bool showStormLine: true
+  property bool showStormLines: true
+
+  // NOAA's geomagnetic storm scale: each level is one Kp step, from G1 (minor)
+  // at Kp 5 to G5 (extreme) at Kp 9. One line per level, so a forecast bar is
+  // read against the whole scale rather than the G1 threshold alone.
+  readonly property var gScale: [
+    { kp: 5, label: "G1" },
+    { kp: 6, label: "G2" },
+    { kp: 7, label: "G3" },
+    { kp: 8, label: "G4" },
+    { kp: 9, label: "G5" }
+  ]
 
   property color barColor: "#cacccc"
   property color forecastColor: "#707880"
@@ -20,6 +32,9 @@ Item {
   property color labelColor: "#707880"
   property string fontFamily: "monospace"
   property real labelSize: 10
+  // The G labels are set smaller than the day labels: five of them stack one
+  // Kp step apart, and the full label size would run them together.
+  readonly property real gLabelSize: Math.max(7, labelSize * 0.8)
   property string timePattern: "HH:mm"
 
   readonly property real labelStrip: labelSize * 1.6
@@ -45,25 +60,34 @@ Item {
     width: parent.width
     height: root.plotHeight
 
-    // Storm threshold.
-    Rectangle {
-      visible: root.showStormLine
-      width: parent.width
-      height: 1
-      y: root.yFor(5)
-      color: root.gridColor
-      opacity: 0.55
-    }
-    Text {
-      textFormat: Text.PlainText
-      visible: root.showStormLine
-      anchors.right: parent.right
-      y: root.yFor(5) - height - 1
-      text: "G1"
-      color: root.labelColor
-      font.family: root.fontFamily
-      font.pixelSize: root.labelSize
-      opacity: 0.8
+    // The NOAA G-scale lines.
+    Repeater {
+      model: root.gScale
+      delegate: Item {
+        anchors.fill: parent
+        visible: root.showStormLines && modelData.kp <= root.maxKp
+
+        Rectangle {
+          width: parent.width
+          height: 1
+          y: root.yFor(modelData.kp)
+          color: root.gridColor
+          opacity: 0.55
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          anchors.right: parent.right
+          // Below its own line, so the top level (G5, at the plot's top edge)
+          // stays inside the plot instead of being clipped above it.
+          y: Math.min(parent.height - height, root.yFor(modelData.kp) + 1)
+          text: modelData.label
+          color: root.labelColor
+          font.family: root.fontFamily
+          font.pixelSize: root.gLabelSize
+          opacity: 0.8
+        }
+      }
     }
 
     // Where this location starts seeing something.

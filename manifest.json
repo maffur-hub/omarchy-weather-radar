@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "eduardodallecort.weather-radar",
   "name": "Weather",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "author": "Eduardo Dalle Cort",
   "license": "MIT",
   "description": "Live weather radar map in the Omarchy bar, with a forecast, the rainfall record and optional storm alerts for your location.",
@@ -28,6 +28,7 @@
       "defaultZoom": 7,
       "smoothTiles": true,
       "showSnow": true,
+      "showTemperature": true,
       "showLabel": false,
       "showRain": true,
       "showLightning": false,
@@ -106,6 +107,13 @@
         "label": "Distinguish snow",
         "defaultValue": true,
         "description": "Colour snow separately from rain."
+      },
+      {
+        "key": "showTemperature",
+        "type": "boolean",
+        "label": "Temperature in bar",
+        "defaultValue": true,
+        "description": "Print the current temperature beside the bar icon."
       },
       {
         "key": "showLabel",
