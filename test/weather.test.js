@@ -461,105 +461,166 @@ test("mergeObservedRain tolerates a missing record", () => {
   assert.strictEqual(Weather.mergeObservedRain(null, { days: { "2026-09-25": 1 } }), null)
 })
 
-// ------------------------------------------------------ rain timing profiles
+// --------------------------------------------------------- rain history
 
-test("the rain-profile request is bounded and asks several models", () => {
-  const command = Weather.rainProfileCommand(-35.2626, 149.1437)
+test("the rain-history request is bounded and asks the one default model", () => {
+  const command = Weather.rainHistoryCommand(-35.2626, 149.1437)
   assert.strictEqual(command[0], "curl")
   assert.ok(command.includes("--max-time"), "no time limit")
   // The byte ceiling is the same constant the caller reasons about, not a
   // number re-typed here that could drift away from it.
   assert.strictEqual(command[command.indexOf("--max-filesize") + 1],
-    String(Weather.RAIN_PROFILE_MAX_BYTES))
+    String(Weather.RAIN_HISTORY_MAX_BYTES))
   assert.ok(command.includes("--globoff"), "curl would expand the URL")
   assert.ok(command.includes("-fsS"), "an error page would parse as data")
 
   const url = command[command.length - 1]
-  assert.ok(url.includes("models="), url)
-  assert.ok(url.includes("past_days="), url)
   assert.ok(url.includes("hourly=precipitation"), url)
+  assert.ok(url.includes("past_days=" + Weather.RAIN_HISTORY_PAST_DAYS), url)
+  // No `models=`: the split and the chart must read the same default model, or
+  // they describe different rain and disagree exactly as they used to.
+  assert.ok(!url.includes("models="), url)
 })
 
-test("coordinates that are not numbers build no rain-profile request", () => {
-  assert.deepStrictEqual(Weather.rainProfileCommand(NaN, 0), [])
-  assert.strictEqual(Weather.rainProfileUrl("abc", 1), "")
+test("coordinates that are not numbers build no rain-history request", () => {
+  assert.deepStrictEqual(Weather.rainHistoryCommand(NaN, 0), [])
+  assert.strictEqual(Weather.rainHistoryUrl("abc", 1), "")
 })
 
-test("rain profiles parse into the times and every model series", () => {
-  const parsed = Weather.parseRainProfiles(JSON.stringify({
+test("rain history parses into the times and the default model's millimetres", () => {
+  const parsed = Weather.parseRainHistory(JSON.stringify({
     hourly: {
-      time: ["2026-10-12T09:00", "2026-10-12T10:00"],
-      precipitation_ecmwf_ifs025: [0.1, 0.2],
-      precipitation_gem_seamless: [0, 0.3]
+      time: ["2026-10-12T09:00", "2026-10-12T10:00", "2026-10-12T11:00"],
+      precipitation: [0.1, null, 0.3]
     }
   }))
-  assert.deepStrictEqual(parsed.times, ["2026-10-12T09:00", "2026-10-12T10:00"])
-  assert.deepStrictEqual(parsed.models.ecmwf_ifs025, [0.1, 0.2])
-  assert.deepStrictEqual(parsed.models.gem_seamless, [0, 0.3])
+  assert.deepStrictEqual(parsed.times,
+    ["2026-10-12T09:00", "2026-10-12T10:00", "2026-10-12T11:00"])
+  // A dropped reading stays null rather than reading as zero.
+  assert.deepStrictEqual(parsed.mm, [0.1, null, 0.3])
 })
 
-test("unusable rain profiles parse to null rather than throwing", () => {
-  assert.strictEqual(Weather.parseRainProfiles(""), null)
-  assert.strictEqual(Weather.parseRainProfiles("not json"), null)
-  assert.strictEqual(Weather.parseRainProfiles({}), null)
-  // Times but no model series: a request that answered for nothing.
-  assert.strictEqual(Weather.parseRainProfiles(JSON.stringify({ hourly: { time: [] } })), null)
+test("unusable rain history parses to null rather than throwing", () => {
+  assert.strictEqual(Weather.parseRainHistory(""), null)
+  assert.strictEqual(Weather.parseRainHistory("not json"), null)
+  assert.strictEqual(Weather.parseRainHistory({}), null)
+  // Times but no precipitation series: a request that answered for nothing.
+  assert.strictEqual(Weather.parseRainHistory(JSON.stringify({ hourly: { time: [] } })), null)
+  assert.strictEqual(Weather.parseRainHistory(
+    JSON.stringify({ hourly: { time: ["2026-10-12T09:00"] } })), null)
 })
 
-test("rain before midnight lands the whole row on the window's first day", () => {
-  const split = Weather.splitObservedRain(
-    [{ date: "2026-10-13", mm: 3.8 }],
-    { times: ["2026-10-12T22:00"], models: { ecmwf_ifs025: [3.8] } })
-  assert.strictEqual(split["2026-10-12"], 3.8)
-  assert.strictEqual(split["2026-10-13"], 0)
+// The window for a row dated 2026-10-13 is [2026-10-12T09, 2026-10-13T09):
+// fifteen hours on the first calendar day and nine on the second.
+function hourSum(hours) {
+  let total = 0
+  for (const key of Object.keys(hours)) total += hours[key]
+  return total
+}
+
+test("a row with no shape and no measurement still sums to the Bureau's total", () => {
+  const built = Weather.buildRainHours([{ date: "2026-10-13", mm: 3.8 }], null, {}, null)
+  // The whole window, to the last millimetre, however it was spread.
+  assert.ok(Math.abs(hourSum(built.hours) - 3.8) < 1e-9, `hours sum ${hourSum(built.hours)}`)
+  // Spread equally across the 24 hours: fifteen before midnight, nine after.
+  assert.strictEqual(built.days["2026-10-12"], 2.4)
+  assert.strictEqual(built.days["2026-10-13"], 1.4)
+  assert.strictEqual(built.days["2026-10-12"] + built.days["2026-10-13"], 3.8)
 })
 
-test("rain after midnight lands the whole row on the window's second day", () => {
-  const split = Weather.splitObservedRain(
-    [{ date: "2026-10-13", mm: 3.8 }],
-    { times: ["2026-10-13T05:00"], models: { ecmwf_ifs025: [3.8] } })
-  assert.strictEqual(split["2026-10-12"], 0)
-  assert.strictEqual(split["2026-10-13"], 3.8)
+test("the daily totals are the hours bucketed and rounded to a tenth", () => {
+  const built = Weather.buildRainHours([{ date: "2026-10-13", mm: 3.8 }], null, {}, null)
+  for (const day of Object.keys(built.days)) {
+    assert.strictEqual(built.days[day], Math.round(built.days[day] * 10) / 10, day)
+  }
+})
+
+test("a row lands wholly on the day the model put its rain on", () => {
+  const history = Weather.parseRainHistory(JSON.stringify({
+    hourly: {
+      time: ["2026-10-12T22:00", "2026-10-13T05:00"],
+      precipitation: [1.0, 0]
+    }
+  }))
+  const built = Weather.buildRainHours([{ date: "2026-10-13", mm: 3.0 }], history, {}, null)
+  assert.strictEqual(built.hours["2026-10-12T22"], 3.0)
+  assert.strictEqual(built.days["2026-10-12"], 3.0)
+  assert.strictEqual(built.days["2026-10-13"], 0)
 })
 
 test("a row splits at midnight in proportion to the model's own timing", () => {
-  // Three millimetres before midnight, one after: the Bureau's 4.0 mm row
-  // divides 3.0 / 1.0 across the two calendar days.
-  const split = Weather.splitObservedRain(
-    [{ date: "2026-10-13", mm: 4.0 }],
-    { times: ["2026-10-12T22:00", "2026-10-13T05:00"],
-      models: { ecmwf_ifs025: [3.0, 1.0] } })
-  assert.strictEqual(split["2026-10-12"], 3.0)
-  assert.strictEqual(split["2026-10-13"], 1.0)
+  // Half a millimetre either side of midnight, scaled to the Bureau's 4.0:
+  // two millimetres on each calendar day, at hourly granularity.
+  const history = Weather.parseRainHistory(JSON.stringify({
+    hourly: {
+      time: ["2026-10-12T22:00", "2026-10-13T05:00"],
+      precipitation: [0.5, 0.5]
+    }
+  }))
+  const built = Weather.buildRainHours([{ date: "2026-10-13", mm: 4.0 }], history, {}, null)
+  assert.ok(Math.abs(built.hours["2026-10-12T22"] - 2.0) < 1e-9,
+    String(built.hours["2026-10-12T22"]))
+  assert.ok(Math.abs(built.hours["2026-10-13T05"] - 2.0) < 1e-9,
+    String(built.hours["2026-10-13T05"]))
+  assert.strictEqual(built.days["2026-10-12"], 2.0)
+  assert.strictEqual(built.days["2026-10-13"], 2.0)
 })
 
-test("the model whose window total is nearest the observed one supplies the timing", () => {
-  // `near` matches the Bureau's 3.8 mm total and puts it before midnight;
-  // `far` is nowhere close and puts its rain after. The nearer model wins, so
-  // the row lands on the first day.
-  const split = Weather.splitObservedRain(
-    [{ date: "2026-10-13", mm: 3.8 }],
-    { times: ["2026-10-12T22:00", "2026-10-13T05:00"],
-      models: { near: [3.8, 0], far: [0, 9.9] } })
-  assert.strictEqual(split["2026-10-12"], 3.8)
-  assert.strictEqual(split["2026-10-13"], 0)
+test("a measured hour leads and the remainder is shaped around it", () => {
+  const history = Weather.parseRainHistory(JSON.stringify({
+    hourly: {
+      time: ["2026-10-12T22:00", "2026-10-13T05:00"],
+      precipitation: [0.5, 0.5]
+    }
+  }))
+  const built = Weather.buildRainHours(
+    [{ date: "2026-10-13", mm: 4.0 }], history, { "2026-10-13T02": 1.0 }, null)
+  // The measured hour keeps its value exactly...
+  assert.strictEqual(built.hours["2026-10-13T02"], 1.0)
+  // ...and the remaining three millimetres are shared by shape: 0.5/1.0 twice.
+  assert.ok(Math.abs(built.hours["2026-10-12T22"] - 1.5) < 1e-9,
+    String(built.hours["2026-10-12T22"]))
+  assert.ok(Math.abs(built.hours["2026-10-13T05"] - 1.5) < 1e-9,
+    String(built.hours["2026-10-13T05"]))
+  // The window still sums to the Bureau's total.
+  assert.ok(Math.abs(hourSum(built.hours) - 4.0) < 1e-9, `hours sum ${hourSum(built.hours)}`)
 })
 
-test("a row no model saw keeps the Bureau's own date", () => {
-  const split = Weather.splitObservedRain(
-    [{ date: "2026-10-13", mm: 3.8 }],
-    { times: ["2026-10-13T05:00"], models: { ecmwf_ifs025: [0] } })
-  assert.strictEqual(split["2026-10-13"], 3.8)
-  assert.strictEqual(split["2026-10-12"], undefined)
+test("the live stretch since 9am lands on the hours the gauge counted", () => {
+  const built = Weather.buildRainHours([{ date: "2026-10-13", mm: 0 }], null, {},
+    { total: 0.6, fromKey: "2026-10-13T09", toKey: "2026-10-13T13" })
+  const live = ["2026-10-13T09", "2026-10-13T10", "2026-10-13T11", "2026-10-13T12"]
+  let sum = 0
+  for (const key of live) sum += built.hours[key]
+  assert.ok(Math.abs(sum - 0.6) < 1e-9, `live sum ${sum}`)
+  assert.ok(Math.abs(built.hours["2026-10-13T09"] - 0.15) < 1e-9,
+    String(built.hours["2026-10-13T09"]))
+  // Today's day total carries it.
+  assert.strictEqual(built.days["2026-10-13"], 0.6)
 })
 
-test("splitObservedRain skips a row with no usable total and rejects a missing side", () => {
-  const profiles = { times: ["2026-10-13T05:00"], models: { ecmwf_ifs025: [1] } }
-  // A null or non-finite total is not a row to split, so nothing comes back.
-  assert.strictEqual(Weather.splitObservedRain(
-    [{ date: "2026-10-13", mm: null }, { date: "2026-10-13", mm: NaN }], profiles), null)
-  assert.strictEqual(Weather.splitObservedRain(null, profiles), null)
-  assert.strictEqual(Weather.splitObservedRain([{ date: "2026-10-13", mm: 1 }], null), null)
+test("a window the model never saw still takes the row total, with no NaN or negative", () => {
+  // The model's one hour is months outside the row's window, so the shape is
+  // empty and the total is spread equally.
+  const history = Weather.parseRainHistory(JSON.stringify({
+    hourly: { time: ["2026-11-01T00:00"], precipitation: [0] }
+  }))
+  const built = Weather.buildRainHours([{ date: "2026-10-13", mm: 2.0 }], history, {}, null)
+  for (const key of Object.keys(built.hours)) {
+    assert.ok(isFinite(built.hours[key]), key)
+    assert.ok(built.hours[key] >= 0, key)
+  }
+  assert.ok(Math.abs(hourSum(built.hours) - 2.0) < 1e-9, `hours sum ${hourSum(built.hours)}`)
+})
+
+test("buildRainHours rejects a record with no daily rows to anchor it", () => {
+  assert.strictEqual(Weather.buildRainHours(null, null, {}, null), null)
+  assert.strictEqual(Weather.buildRainHours([], null, {}, null), null)
+  // A row with no usable total is not a window either; with nothing left, the
+  // result is empty maps rather than an invention.
+  const built = Weather.buildRainHours([{ date: "2026-10-13", mm: null }], null, {}, null)
+  assert.deepStrictEqual(built.hours, {})
+  assert.deepStrictEqual(built.days, {})
 })
 
 // --------------------------------------------------------------- semantics

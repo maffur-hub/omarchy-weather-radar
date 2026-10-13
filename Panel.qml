@@ -1699,6 +1699,7 @@ Panel {
           bomForecast: root.radar ? root.radar.bomForecast : null
           bomObservation: root.radar ? root.radar.bomObservation : null
           observedRain: root.radar ? root.radar.observedRain : null
+          hourlyRain: root.radar ? root.radar.hourlyRain : []
           bomUpdated: root.bomUpdatedClock
           onRefreshRequested: {
             if (root.radar && root.radar.refreshWeather) Qt.callLater(root.radar.refreshWeather)

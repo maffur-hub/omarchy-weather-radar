@@ -7,6 +7,7 @@ import "lib/Basemap.js" as Basemap
 import "lib/Bom.js" as Bom
 import "lib/ImageCache.js" as ImageCache
 import "lib/RadarModel.js" as RadarModel
+import "lib/RainLog.js" as RainLog
 import "lib/Settings.js" as Settings
 import "lib/Solar.js" as Solar
 import "lib/TileCache.js" as TileCache
@@ -188,7 +189,13 @@ Item {
       discardWeather()
       discardBomObservation()
       discardBomDwo()
-      discardBomProfiles()
+      discardBomRainHistory()
+      // The measured hours belong to a gauge, and a new place is a new gauge:
+      // the old hours would lead the new location's shape with rain that fell
+      // somewhere else. Cleared and rewritten under the key now in force; the
+      // next observation re-baselines from the new station's counter.
+      root.rainLog = RainLog.emptyLog(root.weatherKey())
+      if (root.rainLogPath !== "") rainLogFile.setText(JSON.stringify(root.rainLog) + "\n")
     } else {
       // Learning where we are is the other half of the stored latch, and it can
       // arrive after the file does.
@@ -1826,7 +1833,7 @@ Item {
     }
 
     if (record && typeof record === "object"
-        && (record.schema === 1 || record.schema === 2 || record.schema === 3 || record.schema === 4 || record.schema === 5)
+        && (record.schema === 1 || record.schema === 2 || record.schema === 3 || record.schema === 4 || record.schema === 5 || record.schema === 6)
         && record.key === weatherKey()
         && record.data && typeof record.data === "object") {
       if (root.weather === null) root.weather = record.data
@@ -1834,18 +1841,20 @@ Item {
       // Schemas 2 and up carry the BOM reading alongside the point forecast,
       // and a live answer still wins over disk: each is restored only when
       // nothing has arrived for it yet. Schema 3 added the observed rainfall,
-      // schema 4 the daily observations it is corrected with, and schema 5 the
-      // multi-model hourly profile those daily totals are split with.
-      if ((record.schema === 2 || record.schema === 3 || record.schema === 4 || record.schema === 5)
+      // schema 4 the daily observations it is corrected with, schema 5 the
+      // multi-model hourly profile those daily totals were split with, and
+      // schema 6 the single-model rain history that supplies the shape the
+      // Bureau's daily totals are hung on.
+      if ((record.schema === 2 || record.schema === 3 || record.schema === 4 || record.schema === 5 || record.schema === 6)
           && record.bom && typeof record.bom === "object") {
         if (root.bomWarnings === null) root.bomWarnings = record.bom.warnings || null
         if (root.bomForecast === null) root.bomForecast = record.bom.forecast || null
-        if ((record.schema === 3 || record.schema === 4 || record.schema === 5) && root.bomObservation === null)
+        if ((record.schema === 3 || record.schema === 4 || record.schema === 5 || record.schema === 6) && root.bomObservation === null)
           root.bomObservation = record.bom.observation || null
-        if ((record.schema === 4 || record.schema === 5) && root.bomDwo === null)
+        if ((record.schema === 4 || record.schema === 5 || record.schema === 6) && root.bomDwo === null)
           root.bomDwo = record.bom.dwo || null
-        if (record.schema === 5 && root.bomProfiles === null)
-          root.bomProfiles = record.bom.profiles || null
+        if (record.schema === 6 && root.bomRainHistory === null)
+          root.bomRainHistory = record.bom.rainHistory || null
       }
     }
 
@@ -1855,22 +1864,104 @@ Item {
     Qt.callLater(refreshWeather)
   }
 
+  // The gauge's own hourly history, on disk, so the hours the machine was
+  // awake for survive a restart and lead the model's shape. It is this
+  // plugin's own record, keyed to the place configured now, in the same state
+  // directory as the forecast cache beside it — and read with no byte ceiling
+  // for the same reason: it only ever holds what recordRainSample wrote, and a
+  // record from another place reads as no log at all.
+  readonly property string rainLogPath: RainLog.logFilePath(Quickshell.env("HOME"))
+  property var rainLog: null
+
+  // Whether a failed write has already been said. Not "has been saved" — a
+  // successful save clears it, so the next run of failures speaks once more
+  // rather than never.
+  property bool rainLogWarned: false
+
+  FileView {
+    id: rainLogFile
+    path: root.rainLogPath
+    atomicWrites: true
+    printErrors: false
+    onLoaded: root.receiveRainLog(text())
+    onLoadFailed: root.receiveRainLog("")
+    onSaved: root.rainLogWarned = false
+    onSaveFailed: {
+      // Said once per run of failures rather than once per write: the log is
+      // rewritten on every observation, and a full disk would otherwise print
+      // the same line all afternoon. The cost of silence is only that the
+      // measured hours do not outlive the session.
+      if (!root.rainLogWarned) {
+        console.warn("weather-radar: cannot write " + root.rainLogPath
+          + "; the hourly rain history is not being kept")
+      }
+      root.rainLogWarned = true
+    }
+  }
+
+  // The stored log, read as it stands. It is NOT checked against the place
+  // here: the file can load before the location does, and weatherKey() is ""
+  // until then, so a check at this point would throw away this place's own
+  // hours on every start that read the log first. The place is compared where
+  // the hours are used and where a sample is taken, both of which run with the
+  // location in hand; a log for another place simply reads as no hours until
+  // the next sample starts it over.
+  function receiveRainLog(text) {
+    root.rainLog = RainLog.parseLog(text)
+  }
+
+  // Two digits, so an hour key reads "2026-10-13T05" and not "...T5" — the
+  // shape every hour key in the series carries.
+  function pad2(value) {
+    return (value < 10 ? "0" : "") + value
+  }
+
+  // One sample of the gauge's "since 9am" counter, differenced into an hourly
+  // measurement by RainLog. It rides the observation cadence already running,
+  // so it costs no request of its own: applyBomObservationResponse calls this
+  // the moment a fresh reading lands. A log left by another place is started
+  // over under the key in force now, but a log for this place is carried on
+  // untouched — a single sample never throws the history away.
+  function recordRainSample() {
+    if (rainLogPath === "" || !bomObservation) return
+    var since9am = bomObservation.rainSince9am
+    if (typeof since9am !== "number" || !isFinite(since9am)) return
+
+    var atMs = Date.now()
+    var now = new Date(atMs)
+    var dateKey = now.getFullYear() + "-" + pad2(now.getMonth() + 1) + "-" + pad2(now.getDate())
+    var hourKey = dateKey + "T" + pad2(now.getHours())
+    // The 9am-day the counter belongs to. Before 9am it is still counting from
+    // yesterday's reset, so the reading sits under yesterday's day key and a
+    // pair that straddles 9am cannot be differenced across the reset.
+    var dayKey = now.getHours() >= 9 ? dateKey : Weather.dayBefore(dateKey)
+
+    var base = RainLog.matches(root.rainLog, root.weatherKey())
+      ? root.rainLog : RainLog.emptyLog(root.weatherKey())
+    var recorded = RainLog.recordSample(base, {
+      atMs: atMs, since9am: since9am, dayKey: dayKey, hourKey: hourKey
+    })
+    root.rainLog = RainLog.prune(recorded, RainLog.KEEP_DAYS)
+    rainLogFile.setText(JSON.stringify(root.rainLog) + "\n")
+  }
+
   // Written only on a good answer, so the file is always the last thing that
   // was actually drawn rather than the last thing attempted. The schema number
   // is what lets a later shape refuse this record instead of drawing it. Schema
   // 2 carries the BOM warning and district forecast beside the point forecast,
   // schema 3 adds the Bureau's observed rainfall, schema 4 the daily
-  // observations that correct it, and schema 5 the hourly timing profile those
-  // daily totals are split across calendar days with, so the tab's whole
-  // reading survives a restart in one record.
+  // observations that correct it, schema 5 the hourly timing profile the daily
+  // totals were split across calendar days with, and schema 6 the single-model
+  // rain history that supplanted it — so the tab's whole reading survives a
+  // restart in one record.
   function storeWeatherCache(parsed) {
     if (weatherCachePath === "") return
     weatherCacheFile.setText(JSON.stringify({
-      schema: 5,
+      schema: 6,
       key: weatherKey(),
       at: Date.now(),
       data: parsed,
-      bom: { warnings: root.bomWarnings, forecast: root.bomForecast, observation: root.bomObservation, dwo: root.bomDwo, profiles: root.bomProfiles }
+      bom: { warnings: root.bomWarnings, forecast: root.bomForecast, observation: root.bomObservation, dwo: root.bomDwo, rainHistory: root.bomRainHistory }
     }) + "\n")
   }
 
@@ -2072,6 +2163,9 @@ Item {
     }
     bomObservation = parsed
     bomObsFailed = false
+    // The gauge's own hourly history is sampled from this same reading, on the
+    // observation cadence already running rather than a timer of its own.
+    root.recordRainSample()
 
     // The daily history follows the observation: it is only worth asking for
     // the station the DWO product covers, and only once a day.
@@ -2117,6 +2211,15 @@ Item {
     var d = new Date(root.clockNow)
     return d.getFullYear() + "-" + (d.getMonth() < 9 ? "0" : "") + (d.getMonth() + 1)
       + "-" + (d.getDate() < 10 ? "0" : "") + d.getDate()
+  }
+
+  // The local hour, in the same "YYYY-MM-DDTHH" the RAIN_HISTORY hours carry, so
+  // the live stretch since 9am can be named by its end and the hourly chart's
+  // future hours can be recognised against it. Derived from the same clockNow
+  // tick as the day, so the two can never name different instants.
+  readonly property string currentHourKey: {
+    var d = new Date(root.clockNow)
+    return todayDateKey + "T" + (d.getHours() < 10 ? "0" : "") + d.getHours()
   }
 
   function refreshBomDwo() {
@@ -2167,37 +2270,38 @@ Item {
     // The Bureau publishes DWO once a day, so the fetch is dated rather than
     // timed: a parse that succeeded is not re-asked until the day turns.
     bomDwoFetchedDate = todayDateKey
-    // The timing profile the split needs is only worth having beside a daily
+    // The hourly shape the split needs is only worth having beside a daily
     // history, and Open-Meteo rebuilds its hours on the same roughly-daily
     // cadence, so it too is asked once a day rather than on every observation.
-    if (bomProfiles === null || bomProfilesFetchedDate !== todayDateKey)
-      Qt.callLater(refreshBomProfiles)
+    if (bomRainHistory === null || bomRainHistoryFetchedDate !== todayDateKey)
+      Qt.callLater(refreshBomRainHistory)
     if (root.weather !== null) storeWeatherCache(root.weather)
   }
 
   // ---------------------------------------------------------------------------
-  // BOM rain profiles
+  // BOM rain history
   // ---------------------------------------------------------------------------
 
-  // The hourly precipitation of several models, fetched only to time the
-  // Bureau's daily totals. A DWO row is the 24 hours ending 9am, so it straddles
-  // two calendar days and the Bureau does not say which side each millimetre
-  // fell on; the model whose own window total lands nearest the observed one
-  // supplies that timing in Weather.splitObservedRain.
-  property var bomProfiles: null
-  property bool bomProfilesChecking: false
-  property bool bomProfilesFailed: false
-  property string bomProfilesFetchedDate: ""
+  // The default model's hourly precipitation, fetched only to give the
+  // Bureau's daily totals a shape. A DWO row is the 24 hours ending 9am, so it
+  // straddles two calendar days and the Bureau does not say which side each
+  // millimetre fell on; the hours are scaled within each window until they sum
+  // to the measured total in Weather.buildRainHours, which the daily and
+  // hourly charts both read.
+  property var bomRainHistory: null
+  property bool bomRainHistoryChecking: false
+  property bool bomRainHistoryFailed: false
+  property string bomRainHistoryFetchedDate: ""
 
   // Asked only for the station the DWO product is drawn from: without a daily
-  // history there is nothing for the profile to time, and another place's hours
+  // history there is nothing for the shape to fill, and another place's hours
   // are no use here. The rest mirrors refreshWeather — parseFloat, not Number,
   // so an unset location's null can never become 0°N 0°E.
-  function refreshBomProfiles() {
-    if (bomProfilesChecking) return
+  function refreshBomRainHistory() {
+    if (bomRainHistoryChecking) return
     if (!bomObservation || !bomObservation.station
         || bomObservation.station.bomId !== Bom.DWO_STATION_BOM_ID) {
-      discardBomProfiles()
+      discardBomRainHistory()
       return
     }
 
@@ -2205,76 +2309,103 @@ Item {
     var lon = parseFloat(location.longitude)
     if (!isFinite(lat) || !isFinite(lon)) return
 
-    var command = Weather.rainProfileCommand(lat, lon)
+    var command = Weather.rainHistoryCommand(lat, lon)
     if (command.length === 0) return
 
-    bomProfilesChecking = true
-    bomProfilesProc.answered = false
-    bomProfilesProc.command = command
-    bomProfilesProc.running = true
+    bomRainHistoryChecking = true
+    bomRainHistoryProc.answered = false
+    bomRainHistoryProc.command = command
+    bomRainHistoryProc.running = true
   }
 
-  function discardBomProfiles() {
-    bomProfiles = null
-    bomProfilesFailed = false
-    bomProfilesFetchedDate = ""
+  function discardBomRainHistory() {
+    bomRainHistory = null
+    bomRainHistoryFailed = false
+    bomRainHistoryFetchedDate = ""
   }
 
   Process {
-    id: bomProfilesProc
+    id: bomRainHistoryProc
     property bool answered: false
     onExited: function(exitCode) {
       answered = true
-      root.applyBomProfilesResponse(exitCode, bomProfilesOut.text)
+      root.applyBomRainHistoryResponse(exitCode, bomRainHistoryOut.text)
     }
-    onRunningChanged: if (!running && !answered) root.applyBomProfilesResponse(-1, "")
-    stdout: StdioCollector { id: bomProfilesOut; waitForEnd: true }
+    onRunningChanged: if (!running && !answered) root.applyBomRainHistoryResponse(-1, "")
+    stdout: StdioCollector { id: bomRainHistoryOut; waitForEnd: true }
   }
 
-  function applyBomProfilesResponse(exitCode, text) {
+  function applyBomRainHistoryResponse(exitCode, text) {
     // Cleared first and unconditionally, as every other fetch here: whichever
     // way this ends, the request it belongs to is over.
-    bomProfilesChecking = false
-    var parsed = exitCode === 0 ? Weather.parseRainProfiles(text) : null
-    // A failure keeps whatever profile is already held: a day-old timing is
-    // better than falling back to the Bureau's un-split dates.
-    if (!parsed) { bomProfilesFailed = true; return }
-    bomProfiles = parsed
-    bomProfilesFailed = false
-    bomProfilesFetchedDate = todayDateKey
+    bomRainHistoryChecking = false
+    var parsed = exitCode === 0 ? Weather.parseRainHistory(text) : null
+    // A failure keeps whatever history is already held: a day-old shape is
+    // better than falling back to an even spread.
+    if (!parsed) { bomRainHistoryFailed = true; return }
+    bomRainHistory = parsed
+    bomRainHistoryFailed = false
+    bomRainHistoryFetchedDate = todayDateKey
     if (root.weather !== null) storeWeatherCache(root.weather)
   }
 
-  // Open-Meteo's rain, corrected by BOM's observed days and the live gauge
-  // reading. Null when there is no observation to correct with, so the tab
-  // falls back to the modelled record untouched.
-  readonly property var observedRain: {
+  // The one per-hour series both rain charts are read from: the Bureau's daily
+  // totals, shaped by the model's hours and pinned by the gauge, bucketed into
+  // calendar days for the daily chart and kept hour by hour for the hourly one.
+  // Null until there is both a reading and a daily history to anchor it to, so
+  // the tab falls back to the modelled record untouched.
+  readonly property var rainSeries: {
     if (!weather || !weather.rain) return null
     if (!bomDwo || !bomDwo.days) return null
 
-    var days = null
-    if (bomProfiles) days = Weather.splitObservedRain(bomDwo.days, bomProfiles)
-    if (!days) {
-      // No timing profile to split with: keep the Bureau's own dates rather
-      // than guessing.
-      days = {}
-      for (var i = 0; i < bomDwo.days.length; i++) {
-        var entry = bomDwo.days[i]
-        if (entry && entry.date && typeof entry.mm === "number" && isFinite(entry.mm))
-          days[entry.date] = entry.mm
-      }
-    }
-    // The current calendar day's part after 9am is the live reading: it is the
-    // stretch the Bureau's next daily row will later carry.
+    // The gauge's own hourly measurements (hour key -> mm), sampled while the
+    // machine was awake. They lead the model's shape: an hour measured is
+    // exact, and only the remainder of its window's total is spread across
+    // the rest. Hours the machine slept through are simply absent and the
+    // model covers them. A log left by another place is not this gauge's
+    // hours, so it contributes nothing until the next sample restarts it.
+    var measured = RainLog.matches(root.rainLog, root.weatherKey())
+      ? RainLog.measuredHours(root.rainLog) : {}
+
+    // The stretch since 9am today is the one the Bureau's next daily row will
+    // later carry, and the gauge is still counting it. Named by the hour it
+    // runs to so the hours it covers are the ones the chart shows as past.
+    var live = null
     if (bomObservation && typeof bomObservation.rainSince9am === "number"
         && isFinite(bomObservation.rainSince9am)) {
-      days[todayDateKey] = (days[todayDateKey] || 0) + bomObservation.rainSince9am
+      var fromKey = todayDateKey + "T09"
+      var toKey = currentHourKey
+      if (toKey > fromKey)
+        live = { total: bomObservation.rainSince9am, fromKey: fromKey, toKey: toKey }
     }
 
-    var any = false
-    for (var key in days) { if (Object.prototype.hasOwnProperty.call(days, key)) { any = true; break } }
-    if (!any) return null
-    return Weather.mergeObservedRain(weather.rain, { days: days, today: null })
+    return Weather.buildRainHours(bomDwo.days, bomRainHistory, measured, live)
+  }
+
+  // The Bureau's days over the model's record. Null when there is nothing to
+  // correct with, so the tab falls back to the modelled chart untouched.
+  readonly property var observedRain: {
+    if (!rainSeries || !rainSeries.days) return null
+    return Weather.mergeObservedRain(weather.rain, { days: rainSeries.days, today: null })
+  }
+
+  // Today's hours, oldest first, in the 24 slots the hourly chart draws. The
+  // series is keyed by hour, so a day with no history simply has no bars; a
+  // future hour is flagged rather than left null so the chart can tell "not
+  // yet" from "the gauge dropped the reading" and draw neither.
+  readonly property var hourlyRain: {
+    if (!rainSeries) return []
+    var nowHour = parseInt(currentHourKey.substring(11, 13), 10)
+    var out = []
+    for (var h = 0; h < 24; h++) {
+      var key = todayDateKey + "T" + (h < 10 ? "0" : "") + h
+      var value = rainSeries.hours ? rainSeries.hours[key] : undefined
+      var mm = (typeof value === "number" && isFinite(value)) ? value : null
+      var future = h > nowHour
+      if (future) mm = null
+      out.push({ hour: h, time: key, mm: mm, isMidnight: h === 0, future: future })
+    }
+    return out
   }
 
   // ---------------------------------------------------------------------------

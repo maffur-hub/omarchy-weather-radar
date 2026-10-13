@@ -50,6 +50,12 @@ Column {
   // the same set of days.
   property var observedRain: null
 
+  // Today's hours, 12am to 12am, read from the same per-hour series the daily
+  // chart's bars are bucketed from. Twenty-four entries whenever the service
+  // has a series; empty when it does not. A `future` entry is an hour still to
+  // come, which draws nothing rather than claiming the model's forecast.
+  property var hourlyRain: []
+
   // The refresh control asks the service to try the Bureau again; the answer
   // arrives back through the properties above.
   signal refreshRequested()
@@ -65,9 +71,19 @@ Column {
     : ((hasData && weather.rain) ? weather.rain : null)
   readonly property var hourly: (hasData && weather.hourly) ? weather.hourly : []
   readonly property var days: (hasData && weather.forecast) ? weather.forecast : []
-  readonly property var hourlyHistory: (hasData && weather.rain && weather.rain.hours)
-    ? weather.rain.hours : []
-  property bool showHourlyHistory: false
+
+  // The hourly chart scales to its own wettest hour, computed here from the
+  // series it is drawn from rather than read off the modelled record, which the
+  // series no longer shares a window with.
+  readonly property real hourlyRainMax: {
+    var max = 0
+    for (var i = 0; i < hourlyRain.length; i++) {
+      var mm = hourlyRain[i].mm
+      if (typeof mm === "number" && isFinite(mm) && mm > max) max = mm
+    }
+    return max
+  }
+  property bool showHourlyRain: false
   property bool showWarnings: false
   property int expandedDay: -1
 
@@ -268,7 +284,7 @@ Column {
   // corrected some of the days, say so: the reader should know which source the
   // shape describes rather than assume the model wrote all of it.
   readonly property string rainSourceCaption: (root.rain && root.rain.observed === true)
-    ? "Rainfall, last 7 days · BOM observed, split to calendar days"
+    ? "Rainfall, last 7 days · BOM gauge, hourly by Open-Meteo"
     : "Rainfall, last 7 days · Open-Meteo"
 
   // Header: the tab, then where this is for and when it was asked — or, with
@@ -677,13 +693,14 @@ Column {
     opacity: 0.4
   }
 
-  // The hourly history: the last day of completed hours, on its own row below
-  // the daily chart and hidden until asked for. The seven daily bars answer
-  // "which day was wet"; unfolding one of them into its hours is a second
-  // question, worth the space only when someone is asking it.
+  // Today's hours: midnight to midnight, on its own row below the daily chart
+  // and hidden until asked for. The seven daily bars answer "which day was
+  // wet"; unfolding today into its hours answers "when did it fall", from the
+  // same series the bars are bucketed from so the two cannot disagree. Hours
+  // still to come draw nothing rather than the model's forecast.
   Item {
-    id: hourlyHistoryToggle
-    visible: root.hasData && root.hourlyHistory.length > 0
+    id: hourlyRainToggle
+    visible: root.hasData
     width: parent.width
     height: Style.space(20)
 
@@ -693,7 +710,7 @@ Column {
 
       Text {
         textFormat: Text.PlainText
-        text: (root.showHourlyHistory ? "▾" : "▸") + "  Last 24 hours"
+        text: (root.showHourlyRain ? "▾" : "▸") + "  Today, from 12am"
         color: root.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
@@ -703,7 +720,7 @@ Column {
 
       Text {
         textFormat: Text.PlainText
-        text: root.rain ? root.mmOf(root.rain.last24Mm) : ""
+        text: root.mmOf(root.rain ? root.rain.todayMm : 0)
         color: root.accent
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
@@ -714,16 +731,16 @@ Column {
     MouseArea {
       anchors.fill: parent
       cursorShape: Qt.PointingHandCursor
-      onClicked: root.showHourlyHistory = !root.showHourlyHistory
+      onClicked: root.showHourlyRain = !root.showHourlyRain
     }
   }
 
   HourlyRainChart {
-    visible: root.showHourlyHistory && root.hourlyHistory.length > 0
+    visible: root.showHourlyRain && root.hasData
     width: parent.width
     height: Style.space(88)
-    hours: root.hourlyHistory
-    maxMm: root.rain ? root.rain.maxHourMm : 0
+    hours: root.hourlyRain
+    maxMm: root.hourlyRainMax
     barColor: root.foreground
     hoverColor: root.accent
     labelColor: Qt.darker(root.foreground, 1.6)

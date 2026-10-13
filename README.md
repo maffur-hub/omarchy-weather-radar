@@ -330,8 +330,10 @@ What is on it:
   the next rain is due — "tomorrow" marked as such when it crosses midnight —
   and how much of it the next twelve or twenty-four hours carry, or that none
   is expected in the next day at all. The daily chart can be unfolded with a
-  click into an hourly chart of the last 24 completed hours ("Last 24 hours"),
-  which is hidden until asked for.
+  click into today's hourly chart ("Today, from 12am"), which is hidden until
+  asked for: bars from midnight to midnight that sum to the same figure as
+  today's daily bar, with the hours still to come drawn as nothing rather than
+  as the model's forecast.
 - **Next 48 hours** — a row per hour, scrolled sideways: the hour, the glyph,
   the temperature, and the chance of rain in percent where there is one. Where
   the strip crosses into a new day the hour is replaced by that day's weekday,
@@ -388,19 +390,28 @@ Weather Observations product (`IDCJDW2801`) is drawn from — the plugin also
 reads that product and corrects the **last 7 days'** rainfall, and the totals
 under it, with the Bureau's observed daily figures. Each of the Bureau's daily
 totals is the 24 hours ending 9am on the row's date, so it straddles two
-calendar days. The Bureau publishes no sub-daily rainfall, so each total is
-split at local midnight — apportioned by the hourly precipitation of the model
-whose own 24-hour window total lands closest to the Bureau's observed one. This
-is an estimate: the Bureau's total is measured, but the timing that decides
-which side of midnight each millimetre fell on is modelled. The day in progress
-is filled in the same way, with the live reading covering the stretch since
-9am. The **Rain since 9am** figure beside the chart remains its own separate
-figure, not part of that split, so it measures a different window from the
-chart's last bar and the two can differ. The correction is offered only for
-that station, so another city never shows Canberra's history; and where the
-Bureau has no observation for a day, the record for it remains Open-Meteo's.
-This endpoint is unsupported and is asked only for those coordinates; the
-forecast remains Open-Meteo's.
+calendar days, and the Bureau publishes no sub-daily rainfall. The plugin
+spreads each daily total across the hours of its 9am-to-9am window using the
+hourly precipitation of the same Open-Meteo model the forecast comes from — the
+model supplies the shape, the gauge the amount — and buckets the hours by
+calendar day. Both rain charts are drawn from that one per-hour series, so the
+hourly chart and today's daily bar cannot disagree. The spread is an estimate:
+the total is measured, the timing modelled, and the models disagree about the
+small hours of a marginal event.
+
+Where the machine has been awake, the plugin also measures the gauge's hourly
+rainfall directly: it samples the station's **since 9am** counter on the same
+ten-minute cadence as the observation and differences consecutive readings, so
+an hour it watched is exact and leads the model's shape — the model then covers
+only the hours the machine slept through. Those measured hours are kept in
+`~/.local/state/omarchy/weather-radar-rain.json`, keyed to the place they belong
+to and dropped when the location changes. The day in progress is built the same
+way, with the live counter covering the stretch since 9am; the **Rain since
+9am** figure beside the chart remains its own reading of that counter. The
+correction is offered only for that station, so another city never shows
+Canberra's history; and where the Bureau has no observation for a day, the
+record for it remains Open-Meteo's. This endpoint is unsupported and is asked
+only for those coordinates; the forecast remains Open-Meteo's.
 
 These are the Bureau's public products, not a supported API. They are pinned to
 the ACT/NSW products and matched to a warning by district, so this part of the
@@ -694,7 +705,8 @@ wherever that can be done outside the shell (see [Tests](#tests)).
 | `lib/RadarModel.js` | RainViewer endpoints, parsing, echo analysis, sampling |
 | `lib/TileCache.js` | where each radar tile is kept on disk, and the commands that fetch and delete them |
 | `lib/Alerts.js` | intensity bands, forecast reduction, the latch, and what the panel says |
-| `lib/Weather.js` | the Open-Meteo request behind the Weather tab, and everything in the answer the tab draws |
+| `lib/Weather.js` | the Open-Meteo request behind the Weather tab, everything in the answer the tab draws, and the per-hour rain series both rain charts share |
+| `lib/RainLog.js` | the measured hourly rainfall built from sampling the BOM gauge's since-9am counter |
 | `lib/Settings.js` | reading and coercing the widget's settings |
 | `lib/Basemap.js` | decodes `data/basemap.bin` and projects it into the viewport |
 | `lib/Frames.js` | which radar frame to show, across a list that keeps being replaced |

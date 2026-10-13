@@ -1,13 +1,16 @@
 import QtQuick
 
-// Hourly rainfall for the last completed day: one bar per hour, oldest on the
-// left, ending with the hour just ended. The daily chart above answers "which
-// day was wet"; this answers "when did it fall", so the bars are packed tighter
-// and only the six-hour marks and the newest hour are labelled — a label under
+// Hourly rainfall for one calendar day: one bar per hour, 12am on the left,
+// ending with the hour under way. The daily chart above answers "which day was
+// wet"; this answers "when did it fall", so the bars are packed tighter and
+// only the six-hour marks and the current hour are labelled — a label under
 // all twenty-four would run together.
 //
 // A dropped reading draws no bar. The provider returning nothing is not the
-// same as it returning zero, and only one of the two is a measurement.
+// same as it returning zero, and only one of the two is a measurement. An hour
+// still to come is a third thing again: flagged `future` by the service, it
+// draws no bar and says nothing on hover, because the model's figure for it is
+// a forecast rather than a reading.
 //
 // Hovering names the hour under the pointer and its figure, and marks that bar
 // in the accent: the amount is the reason to look at one hour, and twenty-four
@@ -15,7 +18,7 @@ import QtQuick
 Item {
   id: root
 
-  // [{ hour, mm, isMidnight }], oldest first
+  // [{ hour, mm, isMidnight, future }], oldest first
   property var hours: []
   property real maxMm: 0
 
@@ -43,9 +46,20 @@ Item {
     return Math.max(2, plotHeight * Math.min(mm, maxMm) / maxMm)
   }
 
-  // The six-hour marks, plus the newest hour, which is the one being looked for.
+  // The six-hour marks, plus the current hour — the newest one that is not
+  // still to come, which is the one being looked for. An hour yet to fall
+  // carries no reading, so it is named by neither rule.
+  readonly property int newestHourIndex: {
+    for (var i = root.hours.length - 1; i >= 0; i--) {
+      if (!root.hours[i] || root.hours[i].future !== true) return i
+    }
+    return -1
+  }
+
   function showLabel(index, hour) {
-    if (index === root.hours.length - 1) return true
+    var entry = root.hours[index]
+    if (entry && entry.future === true) return false
+    if (index === root.newestHourIndex) return true
     var n = Number(hour)
     return isFinite(n) && n % 6 === 0
   }
@@ -62,11 +76,13 @@ Item {
     return i
   }
 
-  // The figure for the bar under the pointer: one decimal, a trace as "0", and
-  // an explicit absence where the provider dropped the reading.
+  // The figure for the bar under the pointer: one decimal, a trace as "0", an
+  // explicit absence where the provider dropped the reading, and nothing at all
+  // for an hour that has not happened yet.
   function hoverText() {
     if (!root.hasHover()) return ""
     var entry = root.hours[root.hoverIndex]
+    if (entry.future === true) return ""
     if (entry.mm === null || entry.mm === undefined)
       return entry.hour + ":00 · no reading"
     return entry.hour + ":00 · " + (entry.mm < 0.05 ? "0" : entry.mm.toFixed(1)) + " mm"
@@ -87,6 +103,7 @@ Item {
       id: cell
       readonly property real barHeight: root.heightFor(modelData.mm)
       readonly property bool missing: modelData.mm === null || modelData.mm === undefined
+      readonly property bool future: modelData.future === true
       readonly property bool hovered: root.hoverIndex === index
       readonly property bool dimmed: root.hoverIndex >= 0 && !hovered
       x: index * root.slot
@@ -94,7 +111,7 @@ Item {
       height: root.height
 
       Rectangle {
-        visible: !cell.missing
+        visible: !cell.missing && !cell.future
         anchors.horizontalCenter: parent.horizontalCenter
         y: root.topStrip + root.plotHeight - cell.barHeight
         width: Math.max(1, root.slot - 2)
@@ -110,7 +127,9 @@ Item {
         width: parent.width
         horizontalAlignment: Text.AlignHCenter
         y: root.topStrip + root.plotHeight + 2
-        text: modelData.hour ? "" + modelData.hour : ""
+        // Hour zero is falsy, so the obvious `modelData.hour ? ...` would leave
+        // midnight — the left edge of the day — unlabelled.
+        text: modelData.hour === 0 ? "0" : (modelData.hour ? "" + modelData.hour : "")
         color: cell.hovered ? root.hoverColor : root.labelColor
         font.family: root.fontFamily
         font.pixelSize: root.labelSize
@@ -120,10 +139,11 @@ Item {
   }
 
   // The figure for the hour under the pointer, held above the bars so it never
-  // covers the one it describes, and clamped to the strip at either end.
+  // covers the one it describes, and clamped to the strip at either end. An
+  // hour still to come has nothing to say, so the strip stays empty over it.
   Text {
     textFormat: Text.PlainText
-    visible: root.hasHover()
+    visible: root.hasHover() && root.hoverText() !== ""
     width: root.labelSize * 12
     horizontalAlignment: Text.AlignHCenter
     x: Math.max(0, Math.min(root.width - width,

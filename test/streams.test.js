@@ -40,7 +40,7 @@ const PROCESSES = [
   { id: "bomProc", file: "Service.qml", collects: true, builder: "Bom.warningCommand" },
   { id: "bomObsProc", file: "Service.qml", collects: true, builder: "Bom.observationCommand" },
   { id: "bomDwoProc", file: "Service.qml", collects: true, builder: "Bom.dwoCommand" },
-  { id: "bomProfilesProc", file: "Service.qml", collects: true, builder: "Weather.rainProfileCommand" },
+  { id: "bomRainHistoryProc", file: "Service.qml", collects: true, builder: "Weather.rainHistoryCommand" },
   { id: "notifyProc", file: "Service.qml", collects: false, builder: null },
   // The radar tiles go to disk, not into the process. What is collected is
   // curl's own report, a line per tile in a format and with paths this plugin
@@ -93,6 +93,12 @@ const FILE_READS = [
   // ever accepts the shape `parseWeather` produces, keyed to the place
   // configured now, and anything else reads as no cache at all.
   { id: "weatherCacheFile", file: "Service.qml" },
+  // The gauge's own hourly rainfall, sampled from BOM's "since 9am" counter
+  // and kept so the measured hours outlive a shell restart. Bounded the same
+  // way: `parseLog` accepts only the shape `recordSample` writes, under this
+  // schema and this place's key, and an older date falls off the end in
+  // `prune`; anything else reads as no log at all.
+  { id: "rainLogFile", file: "Service.qml" },
 ]
 
 function idsOf(pattern) {
