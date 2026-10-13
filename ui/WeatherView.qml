@@ -268,7 +268,7 @@ Column {
   // corrected some of the days, say so: the reader should know which source the
   // shape describes rather than assume the model wrote all of it.
   readonly property string rainSourceCaption: (root.rain && root.rain.observed === true)
-    ? "Rainfall, last 7 days · BOM observed, Open-Meteo for the rest"
+    ? "Rainfall, last 7 days · BOM observed (to 9am), Open-Meteo for the rest"
     : "Rainfall, last 7 days · Open-Meteo"
 
   // Header: the tab, then where this is for and when it was asked — or, with
@@ -580,7 +580,7 @@ Column {
 
       Text {
         textFormat: Text.PlainText
-        text: (root.rain && root.rain.todayObserved) ? "Rain since 9am" : "Today so far"
+        text: root.bomRainAvailable ? "Rain since 9am" : "Today so far"
         color: root.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
@@ -589,7 +589,13 @@ Column {
 
       Text {
         textFormat: Text.PlainText
-        text: root.rain ? root.mmOf(root.rain.todayMm) : ""
+        // The live gauge reading, which is what "since 9am" means. The daily
+        // chart's last bar is the Bureau's own total for the day ending 9am
+        // (drawn from the DWO row), so the two measure different windows and
+        // are read from different fields rather than one standing for both.
+        text: root.bomRainAvailable
+          ? root.mmOf(root.bomObservation.rainSince9am)
+          : (root.rain ? root.mmOf(root.rain.todayMm) : "")
         visible: text !== ""
         color: root.foreground
         font.family: Style.font.family

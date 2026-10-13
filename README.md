@@ -381,8 +381,11 @@ When the nearest station is Canberra — the station the Bureau's ACT Daily
 Weather Observations product (`IDCJDW2801`) is drawn from — the plugin also
 reads that product and corrects the **last 7 days'** rainfall, and the totals
 under it, with the Bureau's observed daily figures. BOM's daily rainfall is the
-24 hours ending 9am on the row's date, and the live "since 9am" reading covers
-the day in progress. The correction is offered only for that station, so another
+24 hours ending 9am on the row's date, and the day in progress is corrected the
+same way once the Bureau has filed its row for it; until then the live "since
+9am" reading stands in. The **Rain since 9am** figure beside the chart is that
+live reading, so it measures a different window from the chart's last bar and
+the two can differ. The correction is offered only for that station, so another
 city never shows Canberra's history; and where the Bureau has no observation for
 a day, the record for it remains Open-Meteo's. This endpoint is unsupported and
 is asked only for those coordinates; the forecast remains Open-Meteo's.

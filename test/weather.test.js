@@ -392,8 +392,8 @@ test("observed days replace the modelled figure and are flagged", () => {
   assert.strictEqual(merged.days[1].mm, 0)
   assert.strictEqual(merged.days[1].observed, false)
 
-  // Today takes the live "since 9am" reading, which is newer than DWO's row
-  // for today, and says so.
+  // Today's DWO row is not among the observed days here, so the live "since
+  // 9am" reading stands in for it.
   assert.strictEqual(merged.days[6].isToday, true)
   assert.strictEqual(merged.days[6].mm, 4.4)
   assert.strictEqual(merged.todayMm, 4.4)
@@ -411,6 +411,27 @@ test("observed days replace the modelled figure and are flagged", () => {
   assert.strictEqual(merged.next24Mm, rain.next24Mm)
   assert.strictEqual(merged.hours, rain.hours)
   assert.strictEqual(merged.last24Mm, rain.last24Mm)
+})
+
+test("today takes the Bureau's daily row once it is filed, not the live reading", () => {
+  const rain = parsed().rain
+  // The DWO row for the day ending 9am today is 5.0; the live reading since
+  // 9am is 0.0. The Bureau's published daily total is the figure its history
+  // carries, so it is what the chart's last bar and the totals must use — the
+  // live reading is a different window and only stands in before the row exists.
+  const merged = Weather.mergeObservedRain(rain, {
+    days: { "2026-10-01": 5.0 },
+    today: 0
+  })
+  assert.strictEqual(merged.days[6].date, "2026-10-01")
+  assert.strictEqual(merged.days[6].isToday, true)
+  assert.strictEqual(merged.days[6].mm, 5.0)
+  assert.strictEqual(merged.days[6].observed, true)
+  assert.strictEqual(merged.todayMm, 5.0)
+  assert.strictEqual(merged.todayObserved, true)
+  // last7 is the modelled 10.5 with today's 3.8 replaced by the observed 5.0.
+  assert.strictEqual(merged.last7Mm, 11.7)
+  assert.strictEqual(merged.maxMm, 5.0)
 })
 
 test("a missing live reading leaves today modelled and unobserved", () => {
