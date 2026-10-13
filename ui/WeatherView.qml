@@ -268,7 +268,7 @@ Column {
   // corrected some of the days, say so: the reader should know which source the
   // shape describes rather than assume the model wrote all of it.
   readonly property string rainSourceCaption: (root.rain && root.rain.observed === true)
-    ? "Rainfall, last 7 days · BOM observed (to 9am), Open-Meteo for the rest"
+    ? "Rainfall, last 7 days · BOM observed, split to calendar days"
     : "Rainfall, last 7 days · Open-Meteo"
 
   // Header: the tab, then where this is for and when it was asked — or, with

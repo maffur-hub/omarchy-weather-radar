@@ -188,6 +188,7 @@ Item {
       discardWeather()
       discardBomObservation()
       discardBomDwo()
+      discardBomProfiles()
     } else {
       // Learning where we are is the other half of the stored latch, and it can
       // arrive after the file does.
@@ -1825,23 +1826,26 @@ Item {
     }
 
     if (record && typeof record === "object"
-        && (record.schema === 1 || record.schema === 2 || record.schema === 3 || record.schema === 4)
+        && (record.schema === 1 || record.schema === 2 || record.schema === 3 || record.schema === 4 || record.schema === 5)
         && record.key === weatherKey()
         && record.data && typeof record.data === "object") {
       if (root.weather === null) root.weather = record.data
       root.weatherAnswerTime = Number(record.at) || root.weatherAnswerTime
-      // Schemas 2, 3 and 4 carry the BOM reading alongside the point forecast,
+      // Schemas 2 and up carry the BOM reading alongside the point forecast,
       // and a live answer still wins over disk: each is restored only when
-      // nothing has arrived for it yet. Schema 3 added the observed rainfall
-      // and schema 4 the daily observations it is corrected with.
-      if ((record.schema === 2 || record.schema === 3 || record.schema === 4)
+      // nothing has arrived for it yet. Schema 3 added the observed rainfall,
+      // schema 4 the daily observations it is corrected with, and schema 5 the
+      // multi-model hourly profile those daily totals are split with.
+      if ((record.schema === 2 || record.schema === 3 || record.schema === 4 || record.schema === 5)
           && record.bom && typeof record.bom === "object") {
         if (root.bomWarnings === null) root.bomWarnings = record.bom.warnings || null
         if (root.bomForecast === null) root.bomForecast = record.bom.forecast || null
-        if ((record.schema === 3 || record.schema === 4) && root.bomObservation === null)
+        if ((record.schema === 3 || record.schema === 4 || record.schema === 5) && root.bomObservation === null)
           root.bomObservation = record.bom.observation || null
-        if (record.schema === 4 && root.bomDwo === null)
+        if ((record.schema === 4 || record.schema === 5) && root.bomDwo === null)
           root.bomDwo = record.bom.dwo || null
+        if (record.schema === 5 && root.bomProfiles === null)
+          root.bomProfiles = record.bom.profiles || null
       }
     }
 
@@ -1855,17 +1859,18 @@ Item {
   // was actually drawn rather than the last thing attempted. The schema number
   // is what lets a later shape refuse this record instead of drawing it. Schema
   // 2 carries the BOM warning and district forecast beside the point forecast,
-  // schema 3 adds the Bureau's observed rainfall, and schema 4 the daily
-  // observations that correct it, so the tab's whole reading survives a restart
-  // in one record.
+  // schema 3 adds the Bureau's observed rainfall, schema 4 the daily
+  // observations that correct it, and schema 5 the hourly timing profile those
+  // daily totals are split across calendar days with, so the tab's whole
+  // reading survives a restart in one record.
   function storeWeatherCache(parsed) {
     if (weatherCachePath === "") return
     weatherCacheFile.setText(JSON.stringify({
-      schema: 4,
+      schema: 5,
       key: weatherKey(),
       at: Date.now(),
       data: parsed,
-      bom: { warnings: root.bomWarnings, forecast: root.bomForecast, observation: root.bomObservation, dwo: root.bomDwo }
+      bom: { warnings: root.bomWarnings, forecast: root.bomForecast, observation: root.bomObservation, dwo: root.bomDwo, profiles: root.bomProfiles }
     }) + "\n")
   }
 
@@ -2162,6 +2167,81 @@ Item {
     // The Bureau publishes DWO once a day, so the fetch is dated rather than
     // timed: a parse that succeeded is not re-asked until the day turns.
     bomDwoFetchedDate = todayDateKey
+    // The timing profile the split needs is only worth having beside a daily
+    // history, and Open-Meteo rebuilds its hours on the same roughly-daily
+    // cadence, so it too is asked once a day rather than on every observation.
+    if (bomProfiles === null || bomProfilesFetchedDate !== todayDateKey)
+      Qt.callLater(refreshBomProfiles)
+    if (root.weather !== null) storeWeatherCache(root.weather)
+  }
+
+  // ---------------------------------------------------------------------------
+  // BOM rain profiles
+  // ---------------------------------------------------------------------------
+
+  // The hourly precipitation of several models, fetched only to time the
+  // Bureau's daily totals. A DWO row is the 24 hours ending 9am, so it straddles
+  // two calendar days and the Bureau does not say which side each millimetre
+  // fell on; the model whose own window total lands nearest the observed one
+  // supplies that timing in Weather.splitObservedRain.
+  property var bomProfiles: null
+  property bool bomProfilesChecking: false
+  property bool bomProfilesFailed: false
+  property string bomProfilesFetchedDate: ""
+
+  // Asked only for the station the DWO product is drawn from: without a daily
+  // history there is nothing for the profile to time, and another place's hours
+  // are no use here. The rest mirrors refreshWeather — parseFloat, not Number,
+  // so an unset location's null can never become 0°N 0°E.
+  function refreshBomProfiles() {
+    if (bomProfilesChecking) return
+    if (!bomObservation || !bomObservation.station
+        || bomObservation.station.bomId !== Bom.DWO_STATION_BOM_ID) {
+      discardBomProfiles()
+      return
+    }
+
+    var lat = parseFloat(location.latitude)
+    var lon = parseFloat(location.longitude)
+    if (!isFinite(lat) || !isFinite(lon)) return
+
+    var command = Weather.rainProfileCommand(lat, lon)
+    if (command.length === 0) return
+
+    bomProfilesChecking = true
+    bomProfilesProc.answered = false
+    bomProfilesProc.command = command
+    bomProfilesProc.running = true
+  }
+
+  function discardBomProfiles() {
+    bomProfiles = null
+    bomProfilesFailed = false
+    bomProfilesFetchedDate = ""
+  }
+
+  Process {
+    id: bomProfilesProc
+    property bool answered: false
+    onExited: function(exitCode) {
+      answered = true
+      root.applyBomProfilesResponse(exitCode, bomProfilesOut.text)
+    }
+    onRunningChanged: if (!running && !answered) root.applyBomProfilesResponse(-1, "")
+    stdout: StdioCollector { id: bomProfilesOut; waitForEnd: true }
+  }
+
+  function applyBomProfilesResponse(exitCode, text) {
+    // Cleared first and unconditionally, as every other fetch here: whichever
+    // way this ends, the request it belongs to is over.
+    bomProfilesChecking = false
+    var parsed = exitCode === 0 ? Weather.parseRainProfiles(text) : null
+    // A failure keeps whatever profile is already held: a day-old timing is
+    // better than falling back to the Bureau's un-split dates.
+    if (!parsed) { bomProfilesFailed = true; return }
+    bomProfiles = parsed
+    bomProfilesFailed = false
+    bomProfilesFetchedDate = todayDateKey
     if (root.weather !== null) storeWeatherCache(root.weather)
   }
 
@@ -2170,19 +2250,31 @@ Item {
   // falls back to the modelled record untouched.
   readonly property var observedRain: {
     if (!weather || !weather.rain) return null
-    var days = {}
-    if (bomDwo && bomDwo.days) {
+    if (!bomDwo || !bomDwo.days) return null
+
+    var days = null
+    if (bomProfiles) days = Weather.splitObservedRain(bomDwo.days, bomProfiles)
+    if (!days) {
+      // No timing profile to split with: keep the Bureau's own dates rather
+      // than guessing.
+      days = {}
       for (var i = 0; i < bomDwo.days.length; i++) {
-        var day = bomDwo.days[i]
-        if (day && day.date) days[day.date] = day.mm
+        var entry = bomDwo.days[i]
+        if (entry && entry.date && typeof entry.mm === "number" && isFinite(entry.mm))
+          days[entry.date] = entry.mm
       }
     }
-    var today = (bomObservation && typeof bomObservation.rainSince9am === "number"
-      && isFinite(bomObservation.rainSince9am)) ? bomObservation.rainSince9am : null
-    var any = today !== null
+    // The current calendar day's part after 9am is the live reading: it is the
+    // stretch the Bureau's next daily row will later carry.
+    if (bomObservation && typeof bomObservation.rainSince9am === "number"
+        && isFinite(bomObservation.rainSince9am)) {
+      days[todayDateKey] = (days[todayDateKey] || 0) + bomObservation.rainSince9am
+    }
+
+    var any = false
     for (var key in days) { if (Object.prototype.hasOwnProperty.call(days, key)) { any = true; break } }
     if (!any) return null
-    return Weather.mergeObservedRain(weather.rain, { days: days, today: today })
+    return Weather.mergeObservedRain(weather.rain, { days: days, today: null })
   }
 
   // ---------------------------------------------------------------------------

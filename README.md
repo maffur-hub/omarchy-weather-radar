@@ -380,15 +380,21 @@ left out rather than read as a dry day.
 When the nearest station is Canberra — the station the Bureau's ACT Daily
 Weather Observations product (`IDCJDW2801`) is drawn from — the plugin also
 reads that product and corrects the **last 7 days'** rainfall, and the totals
-under it, with the Bureau's observed daily figures. BOM's daily rainfall is the
-24 hours ending 9am on the row's date, and the day in progress is corrected the
-same way once the Bureau has filed its row for it; until then the live "since
-9am" reading stands in. The **Rain since 9am** figure beside the chart is that
-live reading, so it measures a different window from the chart's last bar and
-the two can differ. The correction is offered only for that station, so another
-city never shows Canberra's history; and where the Bureau has no observation for
-a day, the record for it remains Open-Meteo's. This endpoint is unsupported and
-is asked only for those coordinates; the forecast remains Open-Meteo's.
+under it, with the Bureau's observed daily figures. Each of the Bureau's daily
+totals is the 24 hours ending 9am on the row's date, so it straddles two
+calendar days. The Bureau publishes no sub-daily rainfall, so each total is
+split at local midnight — apportioned by the hourly precipitation of the model
+whose own 24-hour window total lands closest to the Bureau's observed one. This
+is an estimate: the Bureau's total is measured, but the timing that decides
+which side of midnight each millimetre fell on is modelled. The day in progress
+is filled in the same way, with the live reading covering the stretch since
+9am. The **Rain since 9am** figure beside the chart remains its own separate
+figure, not part of that split, so it measures a different window from the
+chart's last bar and the two can differ. The correction is offered only for
+that station, so another city never shows Canberra's history; and where the
+Bureau has no observation for a day, the record for it remains Open-Meteo's.
+This endpoint is unsupported and is asked only for those coordinates; the
+forecast remains Open-Meteo's.
 
 These are the Bureau's public products, not a supported API. They are pinned to
 the ACT/NSW products and matched to a warning by district, so this part of the
