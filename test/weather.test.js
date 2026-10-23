@@ -52,6 +52,7 @@ function fixture() {
       temperature_2m: 16.9,
       apparent_temperature: 15.4,
       relative_humidity_2m: 71,
+      pressure_msl: 1013.2,
       precipitation: 0,
       weather_code: 3,
       wind_speed_10m: 14.3,
@@ -69,6 +70,9 @@ function fixture() {
       weather_code: times.map((_, i) => i % 5),
       wind_speed_10m: times.map((_, i) => 5 + (i % 20)),
       relative_humidity_2m: times.map((_, i) => 50 + (i % 40)),
+      // Index 21 is 2026-10-01T16:00, exactly three hours before current.time
+      // at 19:00: 1011.7 there against the current 1013.2 is a 1.5 hPa rise.
+      pressure_msl: times.map((_, i) => i === 21 ? 1011.7 : 1010),
       is_day: times.map(t => {
         const hour = Number(t.slice(11, 13))
         return hour >= 6 && hour < 21 ? 1 : 0
@@ -142,16 +146,18 @@ test("coordinates that are not numbers build no request at all", () => {
   assert.strictEqual(Weather.weatherUrl("abc", 1), "")
 })
 
-test("the hourly list asks only for the fields the strip draws", () => {
+test("the hourly list asks for the strip's fields and the pressure history", () => {
   const url = Weather.weatherUrl(-35.15, 149.13)
   const hourly = url.match(/&hourly=([^&]*)/)[1]
   assert.strictEqual(hourly,
-    "temperature_2m,apparent_temperature,precipitation,precipitation_probability,weather_code,is_day")
+    "temperature_2m,apparent_temperature,precipitation,precipitation_probability,weather_code,is_day,pressure_msl")
   // Humidity and wind are still asked for — off the current reading, where
-  // the tab reads them.
+  // the tab reads them. Pressure is on both sides: the current value is the
+  // reading, the hourly rows are the three hours it is compared against.
   const current = url.match(/&current=([^&]*)/)[1]
   assert.ok(current.includes("relative_humidity_2m"), current)
   assert.ok(current.includes("wind_speed_10m"), current)
+  assert.ok(current.includes("pressure_msl"), current)
 })
 
 test("the refresh cadence is a constant beside the window it re-asks for", () => {
@@ -185,6 +191,70 @@ test("the current reading parses with its description and direction", () => {
   assert.strictEqual(data.current.windDirection, 357)
   assert.strictEqual(data.current.isDay, false)
   assert.strictEqual(data.updatedAt, NOW)
+})
+
+test("the pressure parses and its three-hour change comes from the hourly rows", () => {
+  const data = parsed()
+  assert.strictEqual(data.current.pressure, 1013.2)
+  // The row at 16:00 reads 1011.7, so the current 1013.2 is 1.5 hPa higher.
+  assert.strictEqual(data.pressureChange3h, 1.5)
+  assert.strictEqual(data.pressureTendency, "rising")
+  assert.strictEqual(data.current.pressureChange3h, 1.5)
+  assert.strictEqual(data.current.pressureTendency, "rising")
+  assert.strictEqual(Weather.pressureSegment(data.current.pressure, data.pressureTendency),
+    "1013 hPa, rising")
+})
+
+test("the pressure tendency puts a real rise or fall at a hectopascal either way", () => {
+  assert.strictEqual(Weather.pressureTendency(1), "rising")
+  assert.strictEqual(Weather.pressureTendency(0.999), "steady")
+  assert.strictEqual(Weather.pressureTendency(0), "steady")
+  assert.strictEqual(Weather.pressureTendency(-0.999), "steady")
+  assert.strictEqual(Weather.pressureTendency(-1), "falling")
+  // A missing or unusable change is no tendency, not a claim of steadiness.
+  for (const missing of [NaN, Infinity, -Infinity, null, undefined, ""]) {
+    assert.strictEqual(Weather.pressureTendency(missing), "", String(missing))
+  }
+})
+
+test("a missing pressure is no reading, no tendency and no segment", () => {
+  const data = parsedWith(data => {
+    delete data.current.pressure_msl
+    delete data.hourly.pressure_msl
+  })
+  assert.strictEqual(data.current.pressure, null)
+  assert.strictEqual(data.pressureChange3h, null)
+  assert.strictEqual(data.pressureTendency, "")
+  assert.strictEqual(data.current.pressureChange3h, null)
+  assert.strictEqual(data.current.pressureTendency, "")
+  assert.strictEqual(Weather.pressureSegment(data.current.pressure, data.pressureTendency), "")
+  // A pressure without a history still reads, just without the comma.
+  assert.strictEqual(Weather.pressureSegment(1013.6, ""), "1014 hPa")
+})
+
+test("a dropped pressure at the three-hour mark leaves only the value", () => {
+  const data = parsedWith(data => { data.hourly.pressure_msl[21] = null })
+  assert.strictEqual(data.current.pressure, 1013.2)
+  assert.strictEqual(data.pressureChange3h, null)
+  assert.strictEqual(data.pressureTendency, "")
+  assert.strictEqual(Weather.pressureSegment(data.current.pressure, data.pressureTendency),
+    "1013 hPa")
+})
+
+test("the compact pressure reading puts the tendency and change on one line", () => {
+  assert.strictEqual(Weather.pressureCompact(1013.2, "rising", 1.5), "1013 hPa ↑ 1.5 in 3 h")
+  assert.strictEqual(Weather.pressureCompact(1014.2, "falling", -2.4), "1014 hPa ↓ 2.4 in 3 h")
+  assert.strictEqual(Weather.pressureCompact(1013.2, "steady", 0.4), "1013 hPa → 0.4 in 3 h")
+  assert.strictEqual(Weather.pressureCompact(1013.2, "", null), "1013 hPa")
+  // No pressure is no card at all.
+  assert.strictEqual(Weather.pressureCompact(null, "rising", 1.5), "")
+  assert.strictEqual(Weather.pressureCompact(undefined, "", 1.5), "")
+})
+
+test("a double-digit pressure change drops its decimal", () => {
+  assert.strictEqual(Weather.pressureCompact(1013, "falling", -12), "1013 hPa ↓ 12 in 3 h")
+  // A tendency with no change still reads, without the magnitude.
+  assert.strictEqual(Weather.pressureCompact(1013, "rising", null), "1013 hPa ↑")
 })
 
 test("the outlook runs from today for seven days", () => {

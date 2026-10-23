@@ -54,10 +54,11 @@ const PROCESSES = [
   { id: "imageCleanProc", file: "Service.qml", collects: false, builder: "ImageCache.cleanCommand" },
   { id: "geocodeProc", file: "Panel.qml", collects: true, builder: "geocodingCommand" },
   { id: "locationSaveProc", file: "Panel.qml", collects: false, builder: null },
-  // The wind/pressure grid and the aurora readings: all bounded the same way,
-  // by the library that builds their commands — Overlay for the map and the
-  // space weather.
+  // The wind grid, the separate synoptic pressure field and the aurora
+  // readings: all bounded the same way, by the library that builds their
+  // commands — Overlay for the map and the space weather.
   { id: "gridProc", file: "Panel.qml", collects: true, builder: "gridCommand" },
+  { id: "synopticProc", file: "Panel.qml", collects: true, builder: "gridCommand" },
   { id: "auroraProc", file: "Panel.qml", collects: true, builder: "ovationCommand" },
   { id: "kpProc", file: "Panel.qml", collects: true, builder: "kpCommand" },
   { id: "solarProc", file: "Panel.qml", collects: true, builder: "solarCommand" },

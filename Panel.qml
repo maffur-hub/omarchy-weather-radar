@@ -78,7 +78,13 @@ Panel {
     var setting = { rain: "showRain", lightning: "showLightning", wind: "showWind",
                     synoptic: "showSynoptic", satellite: "showSatellite" }[key]
     if (!setting) return
-    root.persistSetting(setting, !root[setting])
+    var turningOn = !root[setting]
+    // Pressure is a synoptic read. Opened at the default close zoom it shows a
+    // fragment of one line, so step the map out to a regional scale first; the
+    // field stays correct if the user zooms back in, and the centre is left
+    // alone. Turning the chip off changes nothing about the view.
+    if (turningOn && key === "synoptic" && root.view === "radar" && root.zoom > 5) root.zoom = 4
+    root.persistSetting(setting, turningOn)
   }
 
   // The service is the authority on lead time whenever it is mounted; the
@@ -857,13 +863,18 @@ Panel {
   // Wind and pressure overlay
   // ---------------------------------------------------------------------------
   //
-  // A view-sized grid is fetched from Open-Meteo whenever the view stops
-  // moving and either overlay is on, and the pressure contours are computed
-  // from it here. The grid follows the viewport: a request that does not cover
-  // what the map shows would leave the analysis sliding off the edge of the
-  // screen as the view moved.
+  // Wind is a viewport-sized grid fetched from Open-Meteo whenever the view
+  // stops moving and the wind layer is on. It follows the viewport: a request
+  // that does not cover what the map shows would leave the arrows sliding off
+  // the edge of the screen as the view moved.
+  //
+  // Pressure is a separate request over a much wider region. Isobars only read
+  // at synoptic scale, so the field is fetched over the padded region
+  // Overlay.synopticBounds returns and the canvas clips it to the view. The two
+  // layers therefore no longer force each other's fetch.
 
-  readonly property bool needGrid: (root.showWind || root.showSynoptic) && root.view === "radar"
+  readonly property bool needGrid: root.showWind && root.view === "radar"
+  readonly property bool needSynoptic: root.showSynoptic && root.view === "radar"
 
   readonly property var gridBounds: {
     if (!needGrid || !root.opened) return null
@@ -873,6 +884,17 @@ Panel {
   readonly property var gridPoints: {
     if (!gridBounds || !gridShape) return []
     return Overlay.gridPoints(gridBounds, gridShape.cols, gridShape.rows)
+  }
+
+  readonly property var synopticBounds: {
+    if (!needSynoptic || !root.opened) return null
+    return Overlay.synopticBounds(Overlay.viewBounds(root.viewLatitude, root.viewLongitude,
+      root.zoom, mapView.width, root.mapHeight))
+  }
+  readonly property var synopticShape: synopticBounds ? Overlay.synopticShape(mapView.width, root.mapHeight) : null
+  readonly property var synopticPoints: {
+    if (!synopticBounds || !synopticShape) return []
+    return Overlay.gridPoints(synopticBounds, synopticShape.cols, synopticShape.rows)
   }
 
   // What the fetch depends on, so it is asked for again exactly when it would
@@ -890,6 +912,19 @@ Panel {
     onTriggered: root.requestGrid()
   }
 
+  readonly property string synopticKey: [
+    root.opened, root.needSynoptic,
+    synopticBounds ? synopticBounds.latMin.toFixed(4) + "," + synopticBounds.latMax.toFixed(4) : "",
+    synopticBounds ? synopticBounds.lonMin.toFixed(4) + "," + synopticBounds.lonMax.toFixed(4) : ""
+  ].join("|")
+  onSynopticKeyChanged: if (root.opened && root.needSynoptic) synopticTimer.restart()
+
+  Timer {
+    id: synopticTimer
+    interval: 250
+    onTriggered: root.requestSynoptic()
+  }
+
   property var overlayPoints: []
   property var overlayIsobars: []
   property var overlayExtrema: []
@@ -900,13 +935,10 @@ Panel {
     var pts = root.gridPoints
     var shape = root.gridShape
     if (!shape || pts.length === 0) return
-    gridShapePending = shape
     gridProc.answered = false
     gridProc.command = Overlay.gridCommand(pts)
     gridProc.running = true
   }
-
-  property var gridShapePending: null
 
   Process {
     id: gridProc
@@ -927,11 +959,48 @@ Panel {
   function applyGrid(exitCode, text) {
     if (exitCode !== 0) return
     var pts = Overlay.parseGrid(text)
-    var shape = root.gridShapePending
-    if (!pts || !shape) return
+    if (!pts) return
     root.overlayPoints = pts
-    root.overlayIsobars = root.showSynoptic ? Overlay.synopticIsobars(pts, shape.cols, shape.rows) : []
-    root.overlayExtrema = root.showSynoptic ? Overlay.pressureExtrema(pts, shape.cols, shape.rows) : []
+    root.overlayRevision++
+  }
+
+  function requestSynoptic() {
+    if (!root.needSynoptic || !root.opened || synopticProc.running) return
+    var pts = root.synopticPoints
+    var shape = root.synopticShape
+    if (!shape || pts.length === 0) return
+    synopticShapePending = shape
+    synopticProc.answered = false
+    synopticProc.command = Overlay.gridCommand(pts)
+    synopticProc.running = true
+  }
+
+  property var synopticShapePending: null
+
+  Process {
+    id: synopticProc
+
+    // Same fallback as gridProc: a process that cannot start emits no exit, and
+    // without the flag the pressure layer would keep the previous region's
+    // field forever.
+    property bool answered: false
+
+    onExited: function(exitCode) {
+      answered = true
+      root.applySynoptic(exitCode, synopticOut.text)
+    }
+    onRunningChanged: if (!running && !answered) root.applySynoptic(-1, "")
+
+    stdout: StdioCollector { id: synopticOut; waitForEnd: true }
+  }
+
+  function applySynoptic(exitCode, text) {
+    if (exitCode !== 0) return
+    var pts = Overlay.parseGrid(text)
+    var shape = root.synopticShapePending
+    if (!pts || !shape) return
+    root.overlayIsobars = Overlay.synopticIsobars(pts, shape.cols, shape.rows)
+    root.overlayExtrema = Overlay.pressureExtrema(pts, shape.cols, shape.rows, 2)
     root.overlayRevision++
   }
 
@@ -1419,6 +1488,10 @@ Panel {
           overlayIsobars: root.overlayIsobars
           overlayExtrema: root.overlayExtrema
           overlayRevision: root.overlayRevision
+
+          pressure: root.weather && root.weather.current ? root.weather.current.pressure : null
+          pressureChange3h: root.weather && root.weather.current ? root.weather.current.pressureChange3h : null
+          pressureTendency: root.weather && root.weather.current ? root.weather.current.pressureTendency : ""
 
           frameA: root.frameA
           frameB: root.frameB

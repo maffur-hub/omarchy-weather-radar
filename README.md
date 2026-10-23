@@ -233,6 +233,40 @@ The trade is that the true-colour layer is a daily composite rather than a live
 frame — as fresh as the last overpass, while the geostationary layer beneath it
 is current to about ten minutes.
 
+### The pressure overlay
+
+The **pressure overlay**, toggled from the same OVERLAYS row, draws mean
+sea-level isobars and the high and low centres from Open-Meteo readings over a
+synoptic region — the view padded by a tenth and grown to at least 45° of
+longitude by 35° of latitude — clipped to the map. A local radar view therefore
+shows the whole pattern's contours passing through it rather than the few
+fragments a viewport-sized field would draw, and a wider view keeps its own
+padded bounds so the lines run off the edge of the canvas instead of stopping
+at it. Enabling the Pressure chip steps the map out to zoom 4 when it was closer
+in, because a close view of a synoptic chart shows one line; the field stays
+correct if the user zooms back in.
+
+The contour interval is chosen from the range the region actually has — 2, 4 or
+8 hPa, with 4 hPa typical — since a finer step is within the analysis error over
+a field that wide and would only crowd the chart. Each isobar is labelled with
+its own level at up to three points along the visible stretch of the drawn line,
+so a long contour keeps its number on screen rather than losing its only label
+off an edge or under a centre. The same level is not read twice within a fifth
+of the map's width, so a contour that crosses the view in several pieces says
+its number once per branch instead of repeating it. Labels are placed to avoid
+each other, the `H` and `L` discs and the attribution line, and the line is
+smoothed between grid crossings to take the
+corners out of the marching-squares path. The discs carry the sampled pressure
+at the centre beneath the letter, and only a centre that dominates a 5×5
+neighbourhood of readings is marked, so model wobble does not become a chart
+full of highs. Lines are drawn with a dark halo and their labels on a knockout
+box, so both stay legible over the radar's pale and heavy echoes alike.
+
+While the overlay is on, a compact card at the bottom of the map shows the
+current reading at home — not the centre of the view — with an arrow for the
+three-hour tendency and the size of the change. The contours describe the shape
+of the field; the card says what the pressure is where you are.
+
 ### The base map
 
 The coastlines, borders, lakes, rivers, city footprints and place names are
@@ -321,9 +355,9 @@ the current reading immediately.
 What is on it:
 
 - **Now** — the glyph, the temperature in °C, what it feels like, humidity,
-  wind in km/h with its direction, gusts, and today's high and low; under
-  those, today's sunrise, sunset and peak UV, each left out when the forecast
-  has no figure for it.
+  mean sea-level pressure with its three-hour tendency, wind in km/h with its
+  direction, gusts, and today's high and low; under those, today's sunrise,
+  sunset and peak UV, each left out when the forecast has no figure for it.
 - **Rain** — what has fallen so far today, what the last seven days came to,
   and a bar for each of those seven days, today's picked out in the accent
   colour. Between the figures and the bars, one line for what is coming: when
@@ -344,7 +378,7 @@ What is on it:
   day can be clicked to expand a summary of the readings the row has no room
   for — wind and gusts, UV, sunrise and sunset — and clicking again closes it.
 
-The units are metric throughout — °C, mm, km/h — the way the rest of the
+The units are metric throughout — °C, mm, km/h, hPa — the way the rest of the
 plugin asks for them. A reading the forecast does not have is left out of its
 line rather than printed as a zero, and a request that fails keeps the last
 forecast on screen: the tab says `Forecast unavailable` only when it has

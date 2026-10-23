@@ -24,6 +24,27 @@ test("the grid shape respects the point ceiling and the aspect", () => {
   assert.ok(tall.cols * tall.rows <= Overlay.GRID_MAX_POINTS)
 })
 
+test("the synoptic shape is denser than the wind grid and still a legal request", () => {
+  // The pressure field spans a synoptic region, so it can afford more samples
+  // than the wind arrows: about 22x13 at this viewport, a little over 2° of
+  // longitude per cell across 45°.
+  const shape = Overlay.synopticShape(560, 320)
+  assert.ok(Math.abs(shape.cols - 22) <= 1, `${shape.cols}x${shape.rows}`)
+  assert.ok(Math.abs(shape.rows - 13) <= 1, `${shape.cols}x${shape.rows}`)
+  assert.ok(shape.cols * shape.rows <= Overlay.SYNOPTIC_MAX_POINTS, `${shape.cols}x${shape.rows}`)
+
+  const wind = Overlay.gridShape(560, 320)
+  assert.ok(shape.cols >= wind.cols && shape.rows >= wind.rows, "the pressure grid is no denser than the wind one")
+
+  // That many points is a request; the request ceiling is the synoptic one.
+  const pts = []
+  for (let i = 0; i < shape.cols * shape.rows; i++) pts.push({ latitude: 0, longitude: 0 })
+  assert.notStrictEqual(Overlay.gridUrl(pts), "")
+  const huge = []
+  for (let i = 0; i < Overlay.SYNOPTIC_MAX_POINTS + 1; i++) huge.push({ latitude: 0, longitude: 0 })
+  assert.strictEqual(Overlay.gridUrl(huge), "")
+})
+
 test("gridPoints fills the shape row-major and stays in range", () => {
   const b = Overlay.viewBounds(-35.26, 149.14, 7, 560, 320)
   const shape = Overlay.gridShape(560, 320)
@@ -37,6 +58,33 @@ test("gridPoints fills the shape row-major and stays in range", () => {
   }
 })
 
+test("the synoptic bounds grow a local view to a readable region", () => {
+  // A 12.3° x 5.7° radar view is padded and then grown to the chart's minimum,
+  // about the same centre so the pattern still passes through the view.
+  const view = { latMin: -38, latMax: -32.3, lonMin: 143, lonMax: 155.3 }
+  const b = Overlay.synopticBounds(view)
+  assert.ok(b.lonMax - b.lonMin >= 45, JSON.stringify(b))
+  assert.ok(b.latMax - b.latMin >= 35, JSON.stringify(b))
+  assert.ok(Math.abs((b.latMin + b.latMax) / 2 - (view.latMin + view.latMax) / 2) < 1e-9, JSON.stringify(b))
+  assert.ok(Math.abs((b.lonMin + b.lonMax) / 2 - (view.lonMin + view.lonMax) / 2) < 1e-9, JSON.stringify(b))
+})
+
+test("a wide view keeps its own padded synoptic bounds", () => {
+  // 60° x 40° is already larger than the minimum, so the 10% pad is all that
+  // grows: at least 66° x 44°, with contours running off the canvas edge.
+  const view = { latMin: -40, latMax: 0, lonMin: 100, lonMax: 160 }
+  const b = Overlay.synopticBounds(view)
+  assert.ok(b.lonMax - b.lonMin >= 66 - 1e-9, JSON.stringify(b))
+  assert.ok(b.latMax - b.latMin >= 44 - 1e-9, JSON.stringify(b))
+})
+
+test("a polar synoptic box is shifted inside the projection, not squashed", () => {
+  const view = { latMin: 80, latMax: 84, lonMin: 0, lonMax: 20 }
+  const b = Overlay.synopticBounds(view)
+  assert.ok(b.latMax <= 85.1, JSON.stringify(b))
+  assert.ok(Math.abs((b.latMax - b.latMin) - 35) < 1e-6, JSON.stringify(b))
+})
+
 test("the grid request is bounded and made by the library", () => {
   const b = Overlay.viewBounds(-35.26, 149.14, 7, 560, 320)
   const shape = Overlay.gridShape(560, 320)
@@ -47,9 +95,10 @@ test("the grid request is bounded and made by the library", () => {
   assert.ok(command.includes("--max-time"), "no time limit")
   const bytes = Number(command[command.indexOf("--max-filesize") + 1])
   assert.ok(bytes > 0 && bytes <= 1024 * 1024)
-  // Too many points is not a request at all.
+  // Too many points is not a request at all. The request ceiling is the
+  // synoptic one, which serves the wind grid too.
   const huge = []
-  for (let i = 0; i < Overlay.GRID_MAX_POINTS + 1; i++) huge.push({ latitude: 0, longitude: 0 })
+  for (let i = 0; i < Overlay.SYNOPTIC_MAX_POINTS + 1; i++) huge.push({ latitude: 0, longitude: 0 })
   assert.deepStrictEqual(Overlay.gridCommand(huge), [])
 })
 
@@ -115,13 +164,101 @@ test("a flat field has no isobars", () => {
   assert.deepStrictEqual(Overlay.isobars(pts, 6, 6, 4), [])
 })
 
-test("the adaptive synoptic step draws on a calm day", () => {
-  // Only 2 hPa across the whole grid: a fixed 4 hPa step would draw nothing.
+test("the synoptic ladder draws on a calm day", () => {
+  // Only 2 hPa across the whole grid: a fixed 4 hPa step would draw nothing,
+  // while the 2 hPa rung carries the one contour through 1014.
   const pts = risingGrid(6, 6, 1013, 1015)
   assert.deepStrictEqual(Overlay.isobars(pts, 6, 6, 4), [])
   const bars = Overlay.synopticIsobars(pts, 6, 6)
   assert.ok(bars.length > 0, "adaptive step found no contours")
   assert.ok(bars.length <= 12, "adaptive step should not over-populate")
+  assert.deepStrictEqual(bars.map(b => b.level), [1014])
+})
+
+test("the synoptic ladder picks a step from the pressure range in view", () => {
+  // A 6 hPa range is the widest that still fits the 2 hPa rung, and 60 the
+  // widest that fits the 4 hPa one, so those are the boundaries the ladder has
+  // to get right.
+  assert.strictEqual(Overlay.synopticStep(3.4), 2)
+  assert.strictEqual(Overlay.synopticStep(7), 4)
+  assert.strictEqual(Overlay.synopticStep(14), 4)
+  assert.strictEqual(Overlay.synopticStep(20), 4)
+  assert.strictEqual(Overlay.synopticStep(50), 4)
+  assert.strictEqual(Overlay.synopticStep(60), 4)
+  assert.strictEqual(Overlay.synopticStep(61), 8)
+
+  const bars = Overlay.synopticIsobars(risingGrid(6, 6, 1000, 1020), 6, 6)
+  assert.ok(bars.length > 0)
+  for (const bar of bars) {
+    assert.ok(Math.abs(bar.level % 4) < 1e-9, `level ${bar.level} is not on the 4 hPa ladder`)
+    assert.strictEqual(bar.label, String(bar.level))
+  }
+})
+
+test("a flat region draws no micro-contours", () => {
+  // 0.8 hPa across the whole region has no rung on the 2 hPa ladder. The old
+  // half-hectopascal ladder would have drawn three lines here, each of them
+  // within the analysis error over a field this wide.
+  const pts = risingGrid(6, 6, 1012.4, 1013.2)
+  assert.deepStrictEqual(Overlay.synopticIsobars(pts, 6, 6), [])
+})
+
+test("Chaikin smoothing cuts corners but keeps a contour in its band and its ends", () => {
+  const path = [{ lat: 0, lon: 0 }, { lat: 0, lon: 1 }, { lat: 1, lon: 1 }, { lat: 1, lon: 2 }]
+  const smooth = Overlay.smoothPath(path, 2)
+  // The endpoints are where the contour met something, so they survive; the
+  // new points are convex combinations and cannot leave the original band.
+  assert.deepStrictEqual(smooth[0], path[0])
+  assert.deepStrictEqual(smooth[smooth.length - 1], path[path.length - 1])
+  assert.ok(smooth.length > path.length, "smoothing added no points")
+  for (const p of smooth) {
+    assert.ok(p.lat >= 0 && p.lat <= 1, `lat ${p.lat} left the band`)
+    assert.ok(p.lon >= 0 && p.lon <= 2, `lon ${p.lon} left the band`)
+  }
+  // A two-point line has no corner to cut.
+  const line = [{ lat: 1, lon: 2 }, { lat: 3, lon: 4 }]
+  assert.deepStrictEqual(Overlay.smoothPath(line, 2), line)
+
+  // The same guarantee on a real contour: the 1012 hPa line across the grid
+  // still begins and ends on the west and east edges, at the row it crossed.
+  const bars = Overlay.isobars(risingGrid(6, 6, 1000, 1021), 6, 6, 4)
+  const c12 = bars.filter(b => b.level === 1012)
+  assert.ok(c12.length > 0)
+  for (const bar of c12) {
+    assert.deepStrictEqual([bar.path[0].lon, bar.path[bar.path.length - 1].lon].sort((a, b) => a - b), [-50, -45])
+    for (const p of bar.path) {
+      assert.ok(p.lat > 40 && p.lat < 50, `lat ${p.lat} out of the crossed band`)
+      assert.ok(p.lon >= -50 && p.lon <= -45, `lon ${p.lon} out of the grid`)
+    }
+  }
+})
+
+test("a contour that only touches a grid corner leaves no zero-length bar", () => {
+  // Open-Meteo answers pressure in whole hectopascals, so a level often lands
+  // exactly on a sampled corner. Here 1012 touches only the south-east corner
+  // and 1016 only the north-west: every edge crossing meets at that one point,
+  // so the segment has two identical endpoints and joining it would draw a
+  // stray pixel-sized chain. 1014 is the genuine anti-diagonal through the
+  // north-east and south-west corners and must survive.
+  const pts = [
+    { latitude: 2, longitude: 0, pressure: 1016 },   // nw
+    { latitude: 2, longitude: 1, pressure: 1014 },   // ne
+    { latitude: 1, longitude: 0, pressure: 1014 },   // sw
+    { latitude: 1, longitude: 1, pressure: 1012 }    // se
+  ]
+  const bars = Overlay.isobars(pts, 2, 2, 2)
+  assert.deepStrictEqual(bars.filter(b => b.level === 1012), [])
+  assert.deepStrictEqual(bars.filter(b => b.level === 1016), [])
+  assert.strictEqual(bars.filter(b => b.level === 1014).length, 1)
+
+  // No path may repeat a point: a repeated point is the zero-length segment
+  // this test exists to keep off the canvas.
+  for (const bar of bars) {
+    for (let i = 1; i < bar.path.length; i++) {
+      assert.notDeepStrictEqual(bar.path[i], bar.path[i - 1],
+        `level ${bar.level} repeats ${JSON.stringify(bar.path[i])}`)
+    }
+  }
 })
 
 test("pressure extrema label the high and low centres", () => {
@@ -142,6 +279,9 @@ test("pressure extrema label the high and low centres", () => {
   assert.strictEqual(highs[0].lat, 48)   // row 2
   assert.strictEqual(highs[0].lon, -48)  // col 2
   assert.strictEqual(lows[0].lat, 46)    // row 4
+  // The sampled value travels with the centre, for the disc to print.
+  assert.strictEqual(highs[0].pressure, 1015)
+  assert.strictEqual(lows[0].pressure, 1005)
 })
 
 test("a monotonic field has no pressure centres to label", () => {
@@ -161,6 +301,29 @@ test("an adjacent unequal pair of highs labels only the higher one", () => {
   }
   const ex = Overlay.pressureExtrema(pts, 6, 6)
   assert.strictEqual(ex.filter(e => e.kind === "H").length, 1, JSON.stringify(ex))
+})
+
+test("a wider neighbourhood keeps only the dominant pressure centre", () => {
+  // An 11x11 flat grid with a 1020 high and a 1016 shoulder two cells apart.
+  // At the default one-cell reach the eight-neighbour test calls both highs;
+  // at radius 2 only the 1020 peak dominates its 5x5 neighbourhood, which is
+  // the scale of a synoptic centre on a 2° grid.
+  const pts = []
+  for (let r = 0; r < 11; r++) {
+    for (let c = 0; c < 11; c++) {
+      let v = 1010
+      if (r === 5 && c === 5) v = 1020
+      if (r === 5 && c === 7) v = 1016
+      pts.push({ latitude: 40 - r, longitude: -10 + c, pressure: v })
+    }
+  }
+  const near = Overlay.pressureExtrema(pts, 11, 11)
+  assert.strictEqual(near.filter(e => e.kind === "H").length, 2, JSON.stringify(near))
+
+  const far = Overlay.pressureExtrema(pts, 11, 11, 2)
+  const highs = far.filter(e => e.kind === "H")
+  assert.strictEqual(highs.length, 1, JSON.stringify(far))
+  assert.strictEqual(highs[0].pressure, 1020)
 })
 
 test("a missing reading keeps contours out of its cell", () => {

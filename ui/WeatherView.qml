@@ -8,7 +8,8 @@ import "../lib/Weather.js" as Weather
 // what is due next, the next 48 hours with the day boundaries marked, and
 // the seven-day outlook. One request to Open-Meteo — the same service the
 // overlays and the alert forecast already use — in the units the rest of the
-// plugin asks in: degrees Celsius, millimetres, kilometres per hour.
+// plugin asks in: degrees Celsius, millimetres, kilometres per hour,
+// hectopascals.
 //
 // The service owns the fetch and hands over what it parsed; this draws that,
 // and says only what it has. Every read of `weather` goes through `hasData`,
@@ -223,6 +224,11 @@ Column {
       bits.push("Feels like " + Math.round(current.apparentTemperature) + "°")
     if (reading(current.humidity))
       bits.push(Math.round(current.humidity) + "% humidity")
+    // Pressure follows humidity, in the same breath as the other readings:
+    // "1013 hPa, rising". The whole segment disappears when the pressure is
+    // missing, and a pressure with no three-hour history keeps only its value.
+    var pressure = Weather.pressureSegment(current.pressure, current.pressureTendency)
+    if (pressure !== "") bits.push(pressure)
     if (reading(current.windSpeed)) {
       var wind = Math.round(current.windSpeed) + " km/h"
       var direction = Weather.windDirectionLabel(current.windDirection)

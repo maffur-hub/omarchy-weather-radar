@@ -4,6 +4,7 @@ import qs.Ui
 import "../lib/Glyphs.js" as Glyphs
 import "../lib/RadarModel.js" as RadarModel
 import "../lib/TileMath.js" as TileMath
+import "../lib/Weather.js" as Weather
 
 // The map itself: a basemap, the radar frames stacked over it, the alert rings
 // around home, and the drag and wheel gestures that move the view.
@@ -80,6 +81,13 @@ Item {
   property var overlayIsobars: []
   property var overlayExtrema: []
   property var overlayRevision: 0
+
+  // The reading at home, shown in the map card while the pressure overlay is
+  // on; null hides it. The overlay contours say only the shape of the field,
+  // so the card is where the actual number for this place comes from.
+  property var pressure: null
+  property var pressureChange3h: null
+  property string pressureTendency: ""
 
   // Which of the two radar layers holds which frame, by the frame's moment, and
   // which is in front. Bumping a layer's frame while it is behind, then
@@ -451,10 +459,54 @@ Item {
     }
 
     // ---- Overlays -------------------------------------------------------
+    // The pressure reading at the home marker. The overlay itself shows only
+    // the shape of the field, so this is the number the isobars are drawn
+    // through — where you are, not the centre of the view.
+    Rectangle {
+      visible: root.synopticEnabled
+        && typeof root.pressure === "number" && isFinite(root.pressure)
+      anchors.left: parent.left
+      anchors.leftMargin: Style.space(6)
+      anchors.bottom: recenterButton.top
+      anchors.bottomMargin: Style.space(6)
+      width: pressureCard.implicitWidth + Style.space(16)
+      height: pressureCard.implicitHeight + Style.space(10)
+      radius: Style.space(4)
+      color: Qt.rgba(Color.popups.background.r, Color.popups.background.g,
+        Color.popups.background.b, 0.85)
+      border.color: Qt.rgba(root.foreground.r, root.foreground.g,
+        root.foreground.b, 0.16)
+      border.width: 1
+
+      Column {
+        id: pressureCard
+        anchors.centerIn: parent
+
+        Text {
+          text: "HOME"
+          color: root.foreground
+          font.family: Style.font.family
+          font.pixelSize: Math.round(Style.font.caption * 0.72)
+          opacity: 0.5
+          font.letterSpacing: 0.4
+        }
+
+        Text {
+          text: Weather.pressureCompact(root.pressure, root.pressureTendency,
+            root.pressureChange3h)
+          textFormat: Text.PlainText
+          color: root.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+        }
+      }
+    }
+
     // The same affordance every map has, because the keyboard shortcut for it
     // is not discoverable and someone who has panned away has no other way
     // back short of retyping their city.
     Button {
+      id: recenterButton
       anchors.left: parent.left
       anchors.bottom: parent.bottom
       anchors.margins: Style.space(6)
