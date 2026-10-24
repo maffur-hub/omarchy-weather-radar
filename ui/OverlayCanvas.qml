@@ -190,6 +190,10 @@ Canvas {
       var boxHeight = 14
       var count = Math.min(3, Math.max(1, Math.round(line.length / 200)))
       for (var n = 0; n < count; n++) {
+        // The budget is checked per label rather than per line: a level that
+        // arrives as several runs would otherwise spend three each and tile
+        // the map with one number.
+        if ((counts[line.label] || 0) >= 3) break
         var ideal = (n + 0.5) / count
         for (var o = 0; o < offsets.length; o++) {
           var fraction = Math.max(0.02, Math.min(0.98, ideal + offsets[o]))

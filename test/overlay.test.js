@@ -333,6 +333,121 @@ test("a missing reading keeps contours out of its cell", () => {
   assert.ok(bars.length > 0)
 })
 
+test("refining keeps the readings and stays inside their range", () => {
+  // A 3x3 field sampled once per degree, with a ridge through the middle. One
+  // degree between readings is coarser than the synoptic grid ever is, which
+  // makes the interpolation easy to check by hand.
+  const field = [
+    [1004, 1008, 1012],
+    [1010, 1014, 1018],
+    [1006, 1010, 1014]
+  ]
+  const pts = []
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      pts.push({ latitude: 10 - r, longitude: 20 + c, pressure: field[r][c] })
+    }
+  }
+  const grid = Overlay.pressureGrid(pts, 3, 3)
+  const refined = Overlay.refineGrid(grid, 4)
+  // (3 - 1) * 4 + 1 readings positions, so four interpolated cells between
+  // every pair of source cells.
+  assert.strictEqual(refined.cols, 9)
+  assert.strictEqual(refined.rows, 9)
+
+  // Every reading survives exactly where it was: an integer position lies at
+  // t=0 of the Catmull-Rom curve, where it returns p1 unchanged. If this ever
+  // drifts, a contour at a level the observations actually reach would move.
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      assert.strictEqual(refined.value[r * 4][c * 4], field[r][c],
+        `reading at row ${r}, column ${c} moved`)
+    }
+  }
+
+  // The smoothing may overshoot between readings, but never past the extremes
+  // the readings themselves have: no invented high or low.
+  const flat = refined.value.reduce((all, row) => all.concat(row), [])
+  assert.strictEqual(Math.min(...flat), 1004)
+  assert.strictEqual(Math.max(...flat), 1018)
+  for (const v of flat) {
+    assert.ok(v >= 1004 && v <= 1018, `${v} left the source range`)
+  }
+
+  // The coordinates interpolate linearly, so the refined grid still covers the
+  // same rectangle.
+  assert.deepStrictEqual([refined.latAt[0], refined.latAt[8]], [10, 8])
+  assert.deepStrictEqual([refined.lonAt[0], refined.lonAt[8]], [20, 22])
+
+  // A factor that is not a whole number of cells, or a grid with a hole, is
+  // returned as it was: there is nothing to smooth across a missing reading.
+  assert.strictEqual(Overlay.refineGrid(grid, 1), grid)
+  assert.strictEqual(Overlay.refineGrid(grid, 2.5), grid)
+  const holed = Overlay.pressureGrid(pts.map((p, i) =>
+    i === 4 ? { latitude: p.latitude, longitude: p.longitude, pressure: null } : p), 3, 3)
+  assert.strictEqual(Overlay.refineGrid(holed, 4), holed)
+
+  // Longitudes are unwrapped before they are interpolated: a grid that crosses
+  // the date line must interpolate through it, not back around the world.
+  const crossing = []
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      crossing.push({ latitude: 10 - r, longitude: c === 0 ? 179 : c === 1 ? -180 : -179, pressure: 1010 })
+    }
+  }
+  const across = Overlay.refineGrid(Overlay.pressureGrid(crossing, 3, 3), 4)
+  // The two midpoints between 179 and -180 and between -180 and -179 are the
+  // antimeridian's neighbours, not a step across the Pacific.
+  assert.ok(Math.abs(across.lonAt[2]) > 179, `lonAt[2] is ${across.lonAt[2]}`)
+  assert.ok(Math.abs(across.lonAt[6]) > 179, `lonAt[6] is ${across.lonAt[6]}`)
+})
+
+test("a contour curves between the readings instead of taking the chord", () => {
+  // A 5x5 grid at one degree per cell with a single 1020 high in a 1010 field.
+  // At 1015 the unrefined contour is the diamond whose vertices are the
+  // midpoints of the four edges around the high. Every vertex is 0.5° from the
+  // centre while the middle of each side is 0.354° away, a ratio of √2 ≈ 1.41;
+  // Chaikin rounds the corners, which measures ≈ 1.37 here. A curve through
+  // the same readings keeps the vertices but bows the sides out, so the ratio
+  // falls towards 1 — the reading a smooth analysed chart gives.
+  const pts = []
+  for (let r = 0; r < 5; r++) {
+    for (let c = 0; c < 5; c++) {
+      pts.push({ latitude: 40 - r, longitude: 100 + c, pressure: r === 2 && c === 2 ? 1020 : 1010 })
+    }
+  }
+
+  // How far the contour's distance from the high varies: 1 is a circle, and
+  // the diamond is the worst case.
+  function spread(path) {
+    let min = Infinity
+    let max = -Infinity
+    for (const p of path) {
+      const d = Math.hypot(p.lat - 38, p.lon - 102)
+      if (d < min) min = d
+      if (d > max) max = d
+    }
+    return max / min
+  }
+
+  const coarse = Overlay.contourGrid(Overlay.pressureGrid(pts, 5, 5), 5)
+    .filter(b => b.level === 1015)
+  assert.strictEqual(coarse.length, 1, `coarse contour count ${coarse.length}`)
+  const coarseSpread = spread(coarse[0].path)
+  assert.ok(coarseSpread > 1.3, `the coarse contour is not the expected diamond: ${coarseSpread}`)
+
+  const bars = Overlay.isobars(pts, 5, 5, 5).filter(b => b.level === 1015)
+  assert.strictEqual(bars.length, 1, `refined contour count ${bars.length}`)
+  const path = bars[0].path
+  // A single high on a wide field is a closed loop, so the line comes back to
+  // where it started rather than ending on the canvas.
+  assert.deepStrictEqual(path[0], path[path.length - 1], "the isobar is not closed")
+  const refinedSpread = spread(path)
+  assert.ok(refinedSpread < 1.15, `the refined contour is still a diamond: ${refinedSpread}`)
+  assert.ok(refinedSpread < coarseSpread,
+    `refinement did not round the contour: ${refinedSpread} vs ${coarseSpread}`)
+})
+
 // ---------------------------------------------------------------- satellite
 
 test("a satellite tile is a GIBS Web Mercator request at the map's zoom", () => {

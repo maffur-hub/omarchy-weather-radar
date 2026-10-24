@@ -935,6 +935,7 @@ Panel {
     var pts = root.gridPoints
     var shape = root.gridShape
     if (!shape || pts.length === 0) return
+    root.gridAsked = root.gridKey
     gridProc.answered = false
     gridProc.command = Overlay.gridCommand(pts)
     gridProc.running = true
@@ -950,8 +951,17 @@ Panel {
     onExited: function(exitCode) {
       answered = true
       root.applyGrid(exitCode, gridOut.text)
+      // The timer's request is refused while a process runs, so a zoom or pan
+      // that landed during the fetch was never asked for. Without this the map
+      // keeps the old, smaller view's grid and its arrows stop short of the
+      // edge. Ask again, now that the process has finished.
+      if (root.opened && root.needGrid && root.gridKey !== root.gridAsked) gridTimer.restart()
     }
-    onRunningChanged: if (!running && !answered) root.applyGrid(-1, "")
+    onRunningChanged: {
+      if (running) return
+      if (!answered) root.applyGrid(-1, "")
+      if (root.opened && root.needGrid && root.gridKey !== root.gridAsked) gridTimer.restart()
+    }
 
     stdout: StdioCollector { id: gridOut; waitForEnd: true }
   }
@@ -969,12 +979,17 @@ Panel {
     var pts = root.synopticPoints
     var shape = root.synopticShape
     if (!shape || pts.length === 0) return
+    root.synopticAsked = root.synopticKey
     synopticShapePending = shape
     synopticProc.answered = false
     synopticProc.command = Overlay.gridCommand(pts)
     synopticProc.running = true
   }
 
+  // The key each running fetch was asked for, so a view that moved while it
+  // ran can be asked again rather than dropped.
+  property string gridAsked: ""
+  property string synopticAsked: ""
   property var synopticShapePending: null
 
   Process {
@@ -988,8 +1003,16 @@ Panel {
     onExited: function(exitCode) {
       answered = true
       root.applySynoptic(exitCode, synopticOut.text)
+      // Same as gridProc: a zoom or pan that landed during the fetch was
+      // refused by the running process, so ask for the region the map shows now
+      // instead of leaving the old field on screen.
+      if (root.opened && root.needSynoptic && root.synopticKey !== root.synopticAsked) synopticTimer.restart()
     }
-    onRunningChanged: if (!running && !answered) root.applySynoptic(-1, "")
+    onRunningChanged: {
+      if (running) return
+      if (!answered) root.applySynoptic(-1, "")
+      if (root.opened && root.needSynoptic && root.synopticKey !== root.synopticAsked) synopticTimer.restart()
+    }
 
     stdout: StdioCollector { id: synopticOut; waitForEnd: true }
   }

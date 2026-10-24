@@ -248,15 +248,18 @@ correct if the user zooms back in.
 
 The contour interval is chosen from the range the region actually has — 2, 4 or
 8 hPa, with 4 hPa typical — since a finer step is within the analysis error over
-a field that wide and would only crowd the chart. Each isobar is labelled with
-its own level at up to three points along the visible stretch of the drawn line,
-so a long contour keeps its number on screen rather than losing its only label
-off an edge or under a centre. The same level is not read twice within a fifth
-of the map's width, so a contour that crosses the view in several pieces says
-its number once per branch instead of repeating it. Labels are placed to avoid
-each other, the `H` and `L` discs and the attribution line, and the line is
-smoothed between grid crossings to take the
-corners out of the marching-squares path. The discs carry the sampled pressure
+a field that wide and would only crowd the chart. The readings are two to five
+degrees apart, so the field is interpolated smoothly through them before it is
+contoured: joined by straight lines they draw a graticule across a wide chart,
+where a curve through the same readings looks like an analysis. Each isobar is
+labelled with its own level at up to three points along the visible stretch of
+the drawn line, so a long contour keeps its number on screen rather than losing
+its only label off an edge or under a centre. No level is read more than three
+times, nor twice within a fifth of the map's width, so a contour that crosses
+the view in several pieces says its number once per branch instead of repeating
+it. Labels are placed to avoid each other, the `H` and `L` discs and the
+attribution line, and the line is smoothed to take the corners out of the
+marching-squares path. The discs carry the sampled pressure
 at the centre beneath the letter, and only a centre that dominates a 5×5
 neighbourhood of readings is marked, so model wobble does not become a chart
 full of highs. Lines are drawn with a dark halo and their labels on a knockout
